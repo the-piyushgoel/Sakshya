@@ -7,11 +7,16 @@ schema change? → tell team "SCHEMA CHANGE: <table>" → make reset.
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./data/sakshya.db")
 
 _connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=_connect_args)
+_engine_kwargs = {"connect_args": _connect_args}
+if ":memory:" in DATABASE_URL:
+    _engine_kwargs["poolclass"] = StaticPool
+
+engine = create_engine(DATABASE_URL, **_engine_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

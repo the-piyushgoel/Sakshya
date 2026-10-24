@@ -3,17 +3,33 @@ Sakshya — FastAPI application entry point.
 
 Auto-discovery: any file at modules/*/router.py that exports a `router`
 variable (APIRouter) is automatically included under /api.
-NEVER edit this file to add new routes — add a router.py in your module.
+NEVER edit this file to add new module routes — add a router.py in your module.
 """
+from contextlib import asynccontextmanager
 import importlib
 import os
 from pathlib import Path
+import sys
+
+# Ensure 'backend' directory is always on sys.path regardless of CWD
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.db import create_tables
 from app.core.errors import SakshyaError, sakshya_error_handler
+from app.core.router import router as core_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    os.makedirs(_BACKEND_DIR / "data" / "files", exist_ok=True)
+    create_tables()
+    yield
+
 
 # ── App definition ────────────────────────────────────────────────────────────
 
@@ -29,6 +45,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # CORS — open in demo/dev; tighten for production
@@ -44,6 +61,9 @@ app.add_middleware(
 # Register Sakshya error handler
 app.add_exception_handler(SakshyaError, sakshya_error_handler)  # type: ignore[arg-type]
 
+# ── Core router (auth, users) ─────────────────────────────────────────────────
+app.include_router(core_router, prefix="/api")
+
 # ── Auto-discover module routers ──────────────────────────────────────────────
 
 _modules_dir = Path(__file__).parent / "modules"
@@ -55,22 +75,11 @@ for _router_file in sorted(_modules_dir.glob("*/router.py")):
         if hasattr(_mod, "router"):
             app.include_router(_mod.router, prefix="/api")
     except Exception as exc:  # noqa: BLE001
-        # Log but don't crash — lets partial scaffold still start
         print(f"[WARN] Could not load router {_module_name}: {exc}")
 
-# ── Startup ───────────────────────────────────────────────────────────────────
-
-@app.on_event("startup")
-def on_startup() -> None:
-    os.makedirs("data/files", exist_ok=True)
-    create_tables()
-
-# ── Core endpoints (auth, admin, notifications) ───────────────────────────────
-# These live directly in main.py for now; they will be moved to core/router.py
-# in PR-2 (auth) and PR-3 (admin/clock).
+# ── Health check ──────────────────────────────────────────────────────────────
 
 @app.get("/api/health", tags=["meta"])
 def health():
     """Health check — verify the server is up."""
     return {"status": "ok", "version": "1.0.0", "demo_mode": os.getenv("DEMO_MODE", "false").lower() == "true"}
-
