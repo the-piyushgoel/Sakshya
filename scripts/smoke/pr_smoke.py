@@ -133,6 +133,51 @@ def main() -> None:
             assert len(r_tick.json()["jobs_run"]) >= 1
             print("  ✓ background tick engine executed")
 
+            # PR-S1: Monitoring Alerts Stub
+            r_alerts = client.get("/api/alerts", headers=headers)
+            check("GET /api/alerts (ar_sig) → 200", r_alerts, 200)
+            assert r_alerts.json()["total"] >= 1
+            print("  ✓ monitoring alerts retrieved")
+
+            # PR-S1: Public Verification Stubs
+            r_pub = client.post(
+                "/api/public/verify",
+                json={
+                    "code": "SAK-2026-ARYA-8841",
+                    "fdr_number": "FDR-ARYA-401928",
+                    "ifsc": "BRBK0001234",
+                },
+            )
+            check("POST /api/public/verify → 200", r_pub, 200)
+            assert r_pub.json()["status"] == "VALID"
+
+            r_qr = client.get("/api/public/verify/SAK-2026-ARYA-8841")
+            check("GET /api/public/verify/{code} → 200", r_qr, 200)
+            print("  ✓ public verify endpoints verified")
+
+            # PR-S1: Release Desk Stubs
+            r_rel_list = client.get("/api/release/requests", headers=headers)
+            check("GET /api/release/requests → 200", r_rel_list, 200)
+            assert r_rel_list.json()["total"] >= 1
+
+            r_letter = client.get("/api/release/letters/letter-arya-term-2026", headers=headers)
+            check("GET /api/release/letters/{id} → 200", r_letter, 200)
+
+            # Compliance Officer checks holds
+            co_login = client.post("/api/auth/login", json={"username": "co1", "password": "demo@123"})
+            co_token = co_login.json()["access_token"]
+            r_holds = client.get("/api/holds", headers={"Authorization": f"Bearer {co_token}"})
+            check("GET /api/holds (co1) → 200", r_holds, 200)
+            assert r_holds.json()["total"] >= 1
+
+            # Finance Officer checks settlements
+            fo_login = client.post("/api/auth/login", json={"username": "fo1", "password": "demo@123"})
+            fo_token = fo_login.json()["access_token"]
+            r_settlements = client.get("/api/finance/settlements", headers={"Authorization": f"Bearer {fo_token}"})
+            check("GET /api/finance/settlements (fo1) → 200", r_settlements, 200)
+            assert r_settlements.json()["total"] >= 1
+            print("  ✓ release, holds, and settlement stubs verified")
+
     except httpx.ConnectError:
         print(f"  ✗ Cannot connect to {BASE}. Ensure backend is running ('make run').")
         sys.exit(1)
