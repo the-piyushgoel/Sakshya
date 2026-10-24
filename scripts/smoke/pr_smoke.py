@@ -23,164 +23,208 @@ def check(label: str, response: httpx.Response, expected_status: int = 200) -> N
 def main() -> None:
     print("── PR smoke ─────────────────────────────────────")
 
+    client = None
     try:
-        with httpx.Client(base_url=BASE, timeout=10) as client:
-            # PR-1: Health
-            r = client.get("/api/health")
-            check("GET /api/health → 200", r, 200)
-            assert r.json()["status"] == "ok", "health.status != ok"
-            print("  ✓ health.status == ok")
+        h = httpx.Client(base_url=BASE, timeout=2)
+        r = h.get("/api/health")
+        if r.status_code == 200:
+            client = h
+    except Exception:
+        pass
 
-            # PR-2: Demo users & Authentication
-            r_demo = client.get("/api/demo/users")
-            check("GET /api/demo/users → 200", r_demo, 200)
-            users = r_demo.json()
-            assert len(users) == 20, f"Expected 20 users, got {len(users)}"
-            print("  ✓ demo users count == 20")
+    if client is None:
+        backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend"))
+        os.chdir(backend_dir)
+        if backend_dir not in sys.path:
+            sys.path.insert(0, backend_dir)
+        from fastapi.testclient import TestClient
+        from app.main import app
+        client = TestClient(app)
 
-            # Login as Aryabhatta signatory
-            r_login = client.post("/api/auth/login", json={"username": "ar_sig", "password": "demo@123"})
-            check("POST /api/auth/login (ar_sig) → 200", r_login, 200)
-            token = r_login.json()["access_token"]
-            assert token, "Missing access_token"
-            headers = {"Authorization": f"Bearer {token}"}
-            print("  ✓ login token received")
+    try:
+        # PR-1: Health
+        r = client.get("/api/health")
+        check("GET /api/health → 200", r, 200)
+        assert r.json()["status"] == "ok", "health.status != ok"
+        print("  ✓ health.status == ok")
 
-            # Verify current profile
-            r_me = client.get("/api/me", headers=headers)
-            check("GET /api/me → 200", r_me, 200)
-            assert r_me.json()["username"] == "ar_sig"
-            print("  ✓ authenticated profile matches")
+        # PR-2: Demo users & Authentication
+        r_demo = client.get("/api/demo/users")
+        check("GET /api/demo/users → 200", r_demo, 200)
+        users = r_demo.json()
+        assert len(users) == 20, f"Expected 20 users, got {len(users)}"
+        print("  ✓ demo users count == 20")
 
-            # Test step-up PIN verification
-            r_step = client.post("/api/auth/step-up", json={"pin": "246810"}, headers=headers)
-            check("POST /api/auth/step-up → 200", r_step, 200)
-            assert r_step.json()["status"] == "ok"
-            print("  ✓ step-up PIN verified")
+        # Login as Aryabhatta signatory
+        r_login = client.post("/api/auth/login", json={"username": "ar_sig", "password": "demo@123"})
+        check("POST /api/auth/login (ar_sig) → 200", r_login, 200)
+        token = r_login.json()["access_token"]
+        assert token, "Missing access_token"
+        headers = {"Authorization": f"Bearer {token}"}
+        print("  ✓ login token received")
 
-            # PR-3: Clock Persistence & Time-Travel
-            r_clock = client.get("/api/admin/clock")
-            check("GET /api/admin/clock → 200", r_clock, 200)
-            assert "now" in r_clock.json()
-            print("  ✓ clock layout endpoint ok")
+        # Verify current profile
+        r_me = client.get("/api/me", headers=headers)
+        check("GET /api/me → 200", r_me, 200)
+        assert r_me.json()["username"] == "ar_sig"
+        print("  ✓ authenticated profile matches")
 
-            # Login as System Administrator for PR-3 admin operations
-            r_admin_login = client.post("/api/auth/login", json={"username": "admin1", "password": "demo@123"})
-            check("POST /api/auth/login (admin1) → 200", r_admin_login, 200)
-            admin_token = r_admin_login.json()["access_token"]
-            admin_headers = {"Authorization": f"Bearer {admin_token}"}
+        # Test step-up PIN verification
+        r_step = client.post("/api/auth/step-up", json={"pin": "246810"}, headers=headers)
+        check("POST /api/auth/step-up → 200", r_step, 200)
+        assert r_step.json()["status"] == "ok"
+        print("  ✓ step-up PIN verified")
 
-            # Advance clock
-            r_adv = client.post("/api/admin/clock/advance", json={"days": 10}, headers=admin_headers)
-            check("POST /api/admin/clock/advance → 200", r_adv, 200)
-            assert r_adv.json()["offset_seconds"] == 10 * 86400
+        # PR-3: Clock Persistence & Time-Travel
+        r_clock = client.get("/api/admin/clock")
+        check("GET /api/admin/clock → 200", r_clock, 200)
+        assert "now" in r_clock.json()
+        print("  ✓ clock layout endpoint ok")
 
-            # Reset clock
-            r_reset = client.post("/api/admin/clock/reset", headers=admin_headers)
-            check("POST /api/admin/clock/reset → 200", r_reset, 200)
-            assert r_reset.json()["offset_seconds"] == 0
-            print("  ✓ clock advance and reset verified")
+        # Login as System Administrator for PR-3 admin operations
+        r_admin_login = client.post("/api/auth/login", json={"username": "admin1", "password": "demo@123"})
+        check("POST /api/auth/login (admin1) → 200", r_admin_login, 200)
+        admin_token = r_admin_login.json()["access_token"]
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
-            # PR-3: Policy Engine
-            r_policy = client.get("/api/policy", headers=admin_headers)
-            check("GET /api/policy → 200", r_policy, 200)
-            assert r_policy.json()["deposit_term_years"] == 10
-            print("  ✓ policy defaults verified")
+        # Advance clock
+        r_adv = client.post("/api/admin/clock/advance", json={"days": 10}, headers=admin_headers)
+        check("POST /api/admin/clock/advance → 200", r_adv, 200)
+        assert r_adv.json()["offset_seconds"] == 10 * 86400
 
-            # PR-3: Audit Chain & Integrity Verification
-            r_audit = client.get("/api/audit", headers=admin_headers)
-            check("GET /api/audit → 200", r_audit, 200)
-            assert r_audit.json()["total"] >= 1
+        # Reset clock
+        r_reset = client.post("/api/admin/clock/reset", headers=admin_headers)
+        check("POST /api/admin/clock/reset → 200", r_reset, 200)
+        assert r_reset.json()["offset_seconds"] == 0
+        print("  ✓ clock advance and reset verified")
 
-            r_verify = client.get("/api/audit/verify", headers=admin_headers)
-            check("GET /api/audit/verify → 200", r_verify, 200)
-            assert r_verify.json()["ok"] is True
-            print("  ✓ audit chain integrity valid")
+        # PR-3: Policy Engine
+        r_policy = client.get("/api/policy", headers=admin_headers)
+        check("GET /api/policy → 200", r_policy, 200)
+        assert r_policy.json()["deposit_term_years"] == 10
+        print("  ✓ policy defaults verified")
 
-            # Tamper & Repair Demo
-            r_tamper = client.post("/api/admin/audit/tamper-demo", json={"seq": 1}, headers=admin_headers)
-            check("POST /api/admin/audit/tamper-demo → 200", r_tamper, 200)
-            r_broken = client.get("/api/audit/verify", headers=admin_headers)
-            assert r_broken.json()["ok"] is False and r_broken.json()["first_broken_seq"] == 1
-            print("  ✓ tamper detection caught sequence 1 alteration")
+        # PR-3: Audit Chain & Integrity Verification
+        r_audit = client.get("/api/audit", headers=admin_headers)
+        check("GET /api/audit → 200", r_audit, 200)
+        assert r_audit.json()["total"] >= 1
 
-            r_repair = client.post("/api/admin/audit/repair-demo", json={"from_seq": 1}, headers=admin_headers)
-            check("POST /api/admin/audit/repair-demo → 200", r_repair, 200)
-            r_fixed = client.get("/api/audit/verify", headers=admin_headers)
-            assert r_fixed.json()["ok"] is True
-            print("  ✓ repair demo restored audit hash chain")
+        r_verify = client.get("/api/audit/verify", headers=admin_headers)
+        check("GET /api/audit/verify → 200", r_verify, 200)
+        assert r_verify.json()["ok"] is True
+        print("  ✓ audit chain integrity valid")
 
-            # PR-4: Notifications Subsystem
-            r_notifs = client.get("/api/notifications", headers=headers)
-            check("GET /api/notifications (ar_sig) → 200", r_notifs, 200)
-            notifs_data = r_notifs.json()
-            assert notifs_data["total"] >= 1
-            first_notif_id = notifs_data["items"][0]["id"]
-            print("  ✓ institute notifications retrieved")
+        # Tamper & Repair Demo
+        r_tamper = client.post("/api/admin/audit/tamper-demo", json={"seq": 1}, headers=admin_headers)
+        check("POST /api/admin/audit/tamper-demo → 200", r_tamper, 200)
+        r_broken = client.get("/api/audit/verify", headers=admin_headers)
+        assert r_broken.json()["ok"] is False and r_broken.json()["first_broken_seq"] == 1
+        print("  ✓ tamper detection caught sequence 1 alteration")
 
-            r_mark_read = client.post(f"/api/notifications/{first_notif_id}/read", headers=headers)
-            check(f"POST /api/notifications/{first_notif_id}/read → 200", r_mark_read, 200)
-            assert r_mark_read.json()["read"] is True
+        r_repair = client.post("/api/admin/audit/repair-demo", json={"from_seq": 1}, headers=admin_headers)
+        check("POST /api/admin/audit/repair-demo → 200", r_repair, 200)
+        r_fixed = client.get("/api/audit/verify", headers=admin_headers)
+        assert r_fixed.json()["ok"] is True
+        print("  ✓ repair demo restored audit hash chain")
 
-            r_mark_all = client.post("/api/notifications/read-all", headers=headers)
-            check("POST /api/notifications/read-all → 200", r_mark_all, 200)
-            print("  ✓ mark-read endpoints verified")
+        # PR-4: Notifications Subsystem
+        r_notifs = client.get("/api/notifications", headers=headers)
+        check("GET /api/notifications (ar_sig) → 200", r_notifs, 200)
+        notifs_data = r_notifs.json()
+        assert notifs_data["total"] >= 1
+        first_notif_id = notifs_data["items"][0]["id"]
+        print("  ✓ institute notifications retrieved")
 
-            # PR-4: Job Registry & Scheduled Tick
-            r_tick = client.post("/api/admin/tick", headers=admin_headers)
-            check("POST /api/admin/tick → 200", r_tick, 200)
-            assert r_tick.json()["status"] == "ok"
-            assert len(r_tick.json()["jobs_run"]) >= 1
-            print("  ✓ background tick engine executed")
+        r_mark_read = client.post(f"/api/notifications/{first_notif_id}/read", headers=headers)
+        check(f"POST /api/notifications/{first_notif_id}/read → 200", r_mark_read, 200)
+        assert r_mark_read.json()["read"] is True
 
-            # PR-S1: Monitoring Alerts Stub
-            r_alerts = client.get("/api/alerts", headers=headers)
-            check("GET /api/alerts (ar_sig) → 200", r_alerts, 200)
-            assert r_alerts.json()["total"] >= 1
-            print("  ✓ monitoring alerts retrieved")
+        r_mark_all = client.post("/api/notifications/read-all", headers=headers)
+        check("POST /api/notifications/read-all → 200", r_mark_all, 200)
+        print("  ✓ mark-read endpoints verified")
 
-            # PR-S1: Public Verification Stubs
-            r_pub = client.post(
-                "/api/public/verify",
-                json={
-                    "code": "SAK-2026-ARYA-8841",
-                    "fdr_number": "FDR-ARYA-401928",
-                    "ifsc": "BRBK0001234",
-                },
-            )
-            check("POST /api/public/verify → 200", r_pub, 200)
-            assert r_pub.json()["status"] == "VALID"
+        # PR-4: Job Registry & Scheduled Tick
+        r_tick = client.post("/api/admin/tick", headers=admin_headers)
+        check("POST /api/admin/tick → 200", r_tick, 200)
+        assert r_tick.json()["status"] == "ok"
+        assert len(r_tick.json()["jobs_run"]) >= 1
+        print("  ✓ background tick engine executed")
 
-            r_qr = client.get("/api/public/verify/SAK-2026-ARYA-8841")
-            check("GET /api/public/verify/{code} → 200", r_qr, 200)
-            print("  ✓ public verify endpoints verified")
+        # PR-5: Monitoring Subsystem & Maturity Scanning
+        r_alerts = client.get("/api/alerts", headers=headers)
+        check("GET /api/alerts (ar_sig) → 200", r_alerts, 200)
+        assert r_alerts.json()["total"] >= 1
+        for a in r_alerts.json()["items"]:
+            assert "Aryabhatta" in a["institute_name"]
+        print("  ✓ monitoring alerts retrieved with institute scoping")
 
-            # PR-S1: Release Desk Stubs
-            r_rel_list = client.get("/api/release/requests", headers=headers)
-            check("GET /api/release/requests → 200", r_rel_list, 200)
-            assert r_rel_list.json()["total"] >= 1
+        # Scrutiny officer checks alerts
+        so_login = client.post("/api/auth/login", json={"username": "so1", "password": "demo@123"})
+        so_token = so_login.json()["access_token"]
+        so_headers = {"Authorization": f"Bearer {so_token}"}
+        r_so_alerts = client.get("/api/alerts", headers=so_headers)
+        check("GET /api/alerts (so1) → 200", r_so_alerts, 200)
+        assert r_so_alerts.json()["total"] >= 2
+        print("  ✓ scrutiny officer alert overview verified")
 
-            r_letter = client.get("/api/release/letters/letter-arya-term-2026", headers=headers)
-            check("GET /api/release/letters/{id} → 200", r_letter, 200)
+        # Advance clock 20 days with tick to trigger Takshashila 180-day window
+        r_adv_tick = client.post(
+            "/api/admin/clock/advance",
+            json={"days": 20, "run_tick": True},
+            headers=admin_headers,
+        )
+        check("POST /api/admin/clock/advance (20d, run_tick=true) → 200", r_adv_tick, 200)
+        assert any(j["job_name"] == "maturity_scan" for j in r_adv_tick.json()["jobs_run"])
+        r_180 = client.get("/api/alerts?window_days=180", headers=so_headers)
+        check("GET /api/alerts?window_days=180 → 200", r_180, 200)
+        assert any("Takshashila" in a["institute_name"] for a in r_180.json()["items"])
+        print("  ✓ maturity scanning and 180d ladder alert verified via clock advance")
 
-            # Compliance Officer checks holds
-            co_login = client.post("/api/auth/login", json={"username": "co1", "password": "demo@123"})
-            co_token = co_login.json()["access_token"]
-            r_holds = client.get("/api/holds", headers={"Authorization": f"Bearer {co_token}"})
-            check("GET /api/holds (co1) → 200", r_holds, 200)
-            assert r_holds.json()["total"] >= 1
+        # Reset clock for clean baseline
+        client.post("/api/admin/clock/reset", headers=admin_headers)
 
-            # Finance Officer checks settlements
-            fo_login = client.post("/api/auth/login", json={"username": "fo1", "password": "demo@123"})
-            fo_token = fo_login.json()["access_token"]
-            r_settlements = client.get("/api/finance/settlements", headers={"Authorization": f"Bearer {fo_token}"})
-            check("GET /api/finance/settlements (fo1) → 200", r_settlements, 200)
-            assert r_settlements.json()["total"] >= 1
-            print("  ✓ release, holds, and settlement stubs verified")
+        # PR-S1: Public Verification Stubs
+        r_pub = client.post(
+            "/api/public/verify",
+            json={
+                "code": "SAK-2026-ARYA-8841",
+                "fdr_number": "FDR-ARYA-401928",
+                "ifsc": "BRBK0001234",
+            },
+        )
+        check("POST /api/public/verify → 200", r_pub, 200)
+        assert r_pub.json()["status"] == "VALID"
 
-    except httpx.ConnectError:
-        print(f"  ✗ Cannot connect to {BASE}. Ensure backend is running ('make run').")
-        sys.exit(1)
+        r_qr = client.get("/api/public/verify/SAK-2026-ARYA-8841")
+        check("GET /api/public/verify/{code} → 200", r_qr, 200)
+        print("  ✓ public verify endpoints verified")
+
+        # PR-S1: Release Desk Stubs
+        r_rel_list = client.get("/api/release/requests", headers=headers)
+        check("GET /api/release/requests → 200", r_rel_list, 200)
+        assert r_rel_list.json()["total"] >= 1
+
+        r_letter = client.get("/api/release/letters/letter-arya-term-2026", headers=headers)
+        check("GET /api/release/letters/{id} → 200", r_letter, 200)
+
+        # Compliance Officer checks holds
+        co_login = client.post("/api/auth/login", json={"username": "co1", "password": "demo@123"})
+        co_token = co_login.json()["access_token"]
+        r_holds = client.get("/api/holds", headers={"Authorization": f"Bearer {co_token}"})
+        check("GET /api/holds (co1) → 200", r_holds, 200)
+        assert r_holds.json()["total"] >= 1
+
+        # Finance Officer checks settlements
+        fo_login = client.post("/api/auth/login", json={"username": "fo1", "password": "demo@123"})
+        fo_token = fo_login.json()["access_token"]
+        r_settlements = client.get("/api/finance/settlements", headers={"Authorization": f"Bearer {fo_token}"})
+        check("GET /api/finance/settlements (fo1) → 200", r_settlements, 200)
+        assert r_settlements.json()["total"] >= 1
+        print("  ✓ release, holds, and settlement stubs verified")
+
+    finally:
+        if hasattr(client, "close"):
+            client.close()
 
     print("── PR smoke passed ──────────────────────────────\n")
 

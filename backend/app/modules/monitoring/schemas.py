@@ -9,6 +9,7 @@ from app.core.enums import AlertType, Severity
 class AlertOut(BaseModel):
     id: str
     instrument_id: str
+    obligation_id: str | None = None
     fdr_number: str
     institute_id: str
     institute_name: str
@@ -18,7 +19,10 @@ class AlertOut(BaseModel):
     title: str
     message: str
     maturity_date: str
+    is_resolved: bool = False
     created_at: str
+
+    model_config = {"from_attributes": True}
 
 
 class AlertListResponse(BaseModel):
@@ -26,4 +30,3 @@ class AlertListResponse(BaseModel):
     total: int
     page: int
     page_size: int
-

@@ -1,5 +1,5 @@
 """
-Unit tests for Monitoring stub router (§3.5).
+Unit tests for Monitoring router (§3.5).
 """
 from fastapi.testclient import TestClient
 import pytest
@@ -8,6 +8,8 @@ from app.core import clock
 from app.core.db import create_tables, drop_tables
 from app.core.seed import seed as seed_core
 from app.main import app
+from app.modules.intake.seed import seed as seed_intake
+from app.modules.monitoring.seed import seed as seed_monitoring
 
 client = TestClient(app)
 
@@ -16,6 +18,8 @@ client = TestClient(app)
 def setup_monitoring_db():
     create_tables()
     seed_core()
+    seed_intake()
+    seed_monitoring()
     yield
     drop_tables()
     clock.reset()
@@ -51,4 +55,3 @@ def test_alerts_unauthenticated():
     """Verify unauthenticated requests are blocked."""
     res = client.get("/api/alerts")
     assert res.status_code == 401
-
