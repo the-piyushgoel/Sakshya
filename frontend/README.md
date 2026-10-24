@@ -14,4 +14,6 @@ The English / हिन्दी switch is available before and after login; use
 
 The institute portal lives in `src/features/institute/` and provides obligation coverage, FDR preview/review/submission, instrument details and renewal, release requests, and notifications. It calls the endpoints in `docs/CONTRACT.md`; live workflows require the corresponding backend routes to be implemented and available.
 
+Public release-letter verification is available at `/verify` and `/verify/:code?h=...` without the authenticated shell. Requests use the public API client (no authorization header); no-match responses intentionally use one uniform message without returning record details.
+
 In Vite development, authentication is bypassed by default so the UI can be previewed without signing in; use the role selector to switch preview workspaces. Set `VITE_AUTH_BYPASS=false` in the frontend environment and restart Vite to restore local sign-in. The bypass is disabled in production builds and does not mock or bypass backend API authentication.

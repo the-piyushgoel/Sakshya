@@ -61,12 +61,4 @@ export const navItems: FeatureNavItem[] = [
     disabled: true,
     roles: ['INS_SIGNATORY', 'INS_ADMIN'],
   },
-  {
-    label: 'Verify a Letter',
-    path: '/institute/release',
-    icon: 'verify',
-    section: 'support',
-    disabled: true,
-    roles: ['INS_SIGNATORY', 'INS_ADMIN'],
-  },
 ];
