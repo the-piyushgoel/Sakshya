@@ -19,6 +19,7 @@ import {
   useToasts,
 } from '../ui';
 import { formatDate, formatINR } from '../api/format';
+import { useLanguage } from './language';
 
 interface DemoRow {
   id: string;
@@ -34,126 +35,126 @@ const rows: DemoRow[] = [
   { id: '03', fdr: 'SCB/2026/000774', amount: formatINR(80000000), state: 'RENEWAL_DUE', trust: 'L0_CLAIMED' },
 ];
 
-const timelineEvents = [
-  { title: 'Document submitted', description: 'FDR details claimed by institute signatory', date: '24 Oct 2026 · 10:15', tone: 'neutral' as const },
-  { title: 'Bank confirmation requested', description: 'Routed to the registered nodal contact', date: '24 Oct 2026 · 11:02', tone: 'warning' as const },
-  { title: 'Bank confirmed', description: 'Maker-checker verified critical fields', date: '24 Oct 2026 · 13:45', tone: 'success' as const },
-];
-
 export function UiKitPage() {
+  const { language, t } = useLanguage();
   const [stepUpOpen, setStepUpOpen] = useState(false);
   const [stepUpMessage, setStepUpMessage] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [fileName, setFileName] = useState('');
   const { pushToast } = useToasts();
+  const timelineEvents = [
+    { title: t('ui.documentSubmitted'), description: t('ui.documentSubmittedDescription'), date: `${formatDate('2026-10-24', language)} · 10:15`, tone: 'neutral' as const },
+    { title: t('ui.bankConfirmationRequested'), description: t('ui.bankConfirmationDescription'), date: `${formatDate('2026-10-24', language)} · 11:02`, tone: 'warning' as const },
+    { title: t('ui.bankConfirmed'), description: t('ui.bankConfirmedDescription'), date: `${formatDate('2026-10-24', language)} · 13:45`, tone: 'success' as const },
+  ];
 
   return (
     <div className="mx-auto max-w-7xl space-y-8">
       <section className="page-heading">
         <div>
-          <div className="eyebrow">FOUNDATION · PA-1</div>
-          <h1>Interface toolkit</h1>
-          <p>Accessible, reusable building blocks for Sakshya workspaces.</p>
+          <div className="eyebrow">{t('ui.foundation')}</div>
+          <h1>{t('ui.title')}</h1>
+          <p>{t('ui.description')}</p>
         </div>
-        <Badge tone="info" icon={<ShieldCheck size={13} />}>Design system v1</Badge>
+        <Badge tone="info" icon={<ShieldCheck size={13} />}>{t('ui.designVersion')}</Badge>
       </section>
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Total secured value" value={formatINR(655000000)} trend="Illustrative demo data" icon={<ShieldCheck size={18} />} />
-        <StatCard label="Active instruments" value="24" trend="Across 12 institutes" />
-        <StatCard label="Awaiting bank" value="05" trend="2 need attention" tone="warning" />
-        <StatCard label="Record accuracy" value="92.4%" trend="Bank-confirmed critical fields" tone="success" />
+        <StatCard label={t('ui.totalSecured')} value={formatINR(655000000)} trend={t('ui.illustrative')} icon={<ShieldCheck size={18} />} />
+        <StatCard label={t('ui.activeInstruments')} value="24" trend={t('ui.acrossInstitutes')} />
+        <StatCard label={t('ui.awaitingBank')} value="05" trend={t('ui.needAttention')} tone="warning" />
+        <StatCard label={t('ui.recordAccuracy')} value="92.4%" trend={t('ui.bankConfirmedFields')} tone="success" />
       </section>
 
       <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-        <Card title="Buttons & feedback" description="Primary actions, status labels and inline feedback">
+        <Card title={t('ui.buttonsFeedback')} description={t('ui.buttonsDescription')}>
           <div className="flex flex-wrap items-center gap-3">
-            <Button onClick={() => pushToast({ title: 'Action complete', description: 'This is a success toast.', tone: 'success' })}>Primary action</Button>
-            <Button variant="secondary" onClick={() => setModalOpen(true)}>Open modal</Button>
-            <Button variant="outline" onClick={() => setStepUpOpen(true)}>Step-up action</Button>
-            <Button variant="ghost">Quiet action</Button>
-            <Button variant="danger">Reject</Button>
-            <Button disabled>Disabled</Button>
+            <Button onClick={() => pushToast({ title: t('ui.actionComplete'), description: t('ui.successToast'), tone: 'success' })}>{t('ui.primaryAction')}</Button>
+            <Button variant="secondary" onClick={() => setModalOpen(true)}>{t('ui.openModal')}</Button>
+            <Button variant="outline" onClick={() => setStepUpOpen(true)}>{t('ui.stepUpAction')}</Button>
+            <Button variant="ghost">{t('ui.quietAction')}</Button>
+            <Button variant="danger">{t('ui.reject')}</Button>
+            <Button disabled>{t('ui.disabled')}</Button>
           </div>
           <div className="mt-6 flex flex-wrap gap-2">
             {['ACTIVE', 'SUBMITTED', 'BANK_PENDING', 'DISCREPANCY', 'RENEWAL_DUE', 'LAPSED', 'CLOSED'].map((state) => <StatusPill key={state} value={state} />)}
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
-            <Badge tone="success">Verified</Badge><Badge tone="warning">Needs review</Badge><Badge tone="danger">High risk</Badge><Badge tone="info">Information</Badge><Badge tone="neutral">Draft</Badge>
+            <Badge tone="success">{t('ui.verified')}</Badge><Badge tone="warning">{t('ui.needsReview')}</Badge><Badge tone="danger">{t('ui.highRisk')}</Badge><Badge tone="info">{t('ui.information')}</Badge><Badge tone="neutral">{t('ui.draft')}</Badge>
           </div>
         </Card>
-        <Card title="Field trust" description="Trust is tracked for each individual instrument field">
+        <Card title={t('ui.fieldTrust')} description={t('ui.fieldTrustDescription')}>
           <div className="space-y-3">
-            <TrustBadge trust="L0_CLAIMED" source="Institute upload" evidenceRef="doc/8f3a" setAt="24 Oct 2026" />
-            <TrustBadge trust="L1_ATTESTED" source="Officer review" evidenceRef="case/184" setAt="24 Oct 2026" />
+            <TrustBadge trust="L0_CLAIMED" source={t('ui.instituteUpload')} evidenceRef="doc/8f3a" setAt={formatDate('2026-10-24', language)} />
+            <TrustBadge trust="L1_ATTESTED" source={t('ui.officerReview')} evidenceRef="case/184" setAt={formatDate('2026-10-24', language)} />
             <TrustBadge trust="L2_BANK_CONFIRMED" source="BRB maker + checker" evidenceRef="bank/392" setAt="24 Oct 2026" />
           </div>
-          <div className="mt-5 rounded-xl bg-slate-50 p-4 text-sm leading-6 text-slate-600"><Info size={16} className="mr-2 inline text-navy-600" />Each badge explains the evidence source and who verified the value.</div>
+          <div className="mt-5 rounded-xl bg-slate-50 p-4 text-sm leading-6 text-slate-600"><Info size={16} className="mr-2 inline text-navy-600" />{t('ui.recordExplainsEvidence')}</div>
         </Card>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-2">
-        <Card title="Records table" description="Compact table layout with readable status and trust">
+        <Card title={t('ui.recordsTable')} description={t('ui.recordsTableDescription')}>
           <DataTable<DemoRow>
             rows={rows}
             rowKey={(row) => row.id}
             columns={[
-              { key: 'fdr', header: 'FDR number', render: (row) => <span className="font-semibold text-navy-800">{row.fdr}</span> },
-              { key: 'amount', header: 'Principal', render: (row) => row.amount },
-              { key: 'status', header: 'Status', render: (row) => <StatusPill value={row.state} /> },
-              { key: 'trust', header: 'Trust', render: (row) => <TrustBadge trust={row.trust} compact /> },
+              { key: 'fdr', header: t('ui.fdrNumber'), render: (row) => <span className="font-semibold text-navy-800">{row.fdr}</span> },
+              { key: 'amount', header: t('ui.principal'), render: (row) => row.amount },
+              { key: 'status', header: t('ui.status'), render: (row) => <StatusPill value={row.state} /> },
+              { key: 'trust', header: t('ui.trust'), render: (row) => <TrustBadge trust={row.trust} compact /> },
             ]}
           />
         </Card>
-        <Card title="Navigation & tabs" description="Tab panels preserve clear focus and state">
+        <Card title={t('ui.navigationTabs')} description={t('ui.tabsDescription')}>
           <Tabs
             tabs={[
-              { id: 'summary', label: 'Summary', content: <p className="py-4 text-sm leading-6 text-slate-600">Instrument fields, obligation coverage and next steps stay together in a clear case summary.</p> },
-              { id: 'checks', label: 'Checks', content: <p className="py-4 text-sm leading-6 text-slate-600">Document checks return explainable flags; they never approve or reject a deposit by themselves.</p> },
-              { id: 'activity', label: 'Activity', content: <p className="py-4 text-sm leading-6 text-slate-600">State changes are time-stamped and attached to the auditable activity timeline.</p> },
+              { id: 'summary', label: t('ui.summary'), content: <p className="py-4 text-sm leading-6 text-slate-600">{t('ui.summaryContent')}</p> },
+              { id: 'checks', label: t('ui.checks'), content: <p className="py-4 text-sm leading-6 text-slate-600">{t('ui.checksContent')}</p> },
+              { id: 'activity', label: t('ui.activity'), content: <p className="py-4 text-sm leading-6 text-slate-600">{t('ui.activityContent')}</p> },
             ]}
           />
           <div className="mt-4 flex items-center justify-between rounded-xl border border-slate-100 p-3 text-sm">
-            <span className="text-slate-600">View audit details</span><button className="inline-flex items-center gap-1 font-semibold text-navy-700">Open <ChevronRight size={15} /></button>
+            <span className="text-slate-600">{t('ui.viewAudit')}</span><button className="inline-flex items-center gap-1 font-semibold text-navy-700">{t('ui.open')} <ChevronRight size={15} /></button>
           </div>
         </Card>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-2">
-        <Card title="Timeline & loading" description="Audit-friendly event presentation and content placeholders">
+        <Card title={t('ui.timelineLoading')} description={t('ui.timelineDescription')}>
           <Timeline events={timelineEvents} />
           <div className="mt-6 space-y-3"><Skeleton className="h-4 w-2/3" /><Skeleton className="h-10" /><Skeleton className="h-10 w-5/6" /></div>
         </Card>
-        <Card title="Forms & uploads" description="Clear labels, helpful validation and file constraints">
+        <Card title={t('ui.formsUploads')} description={t('ui.formsDescription')}>
           <div className="grid gap-4 sm:grid-cols-2">
-            <FormField label="FDR number" name="fdrNumber" placeholder="Enter FDR number" hint="As printed on the bank receipt" />
-            <FormField label="Principal amount" name="principal" type="number" placeholder="Amount in paise" error="Amount must be a positive value." />
+            <FormField label={t('ui.fdrNumber')} name="fdrNumber" placeholder={t('ui.enterFdr')} hint={t('ui.asPrinted')} />
+            <FormField label={t('ui.principal')} name="principal" type="number" placeholder={t('ui.amountPaise')} error={t('ui.positiveAmount')} />
           </div>
           <div className="mt-4">
             <FileDrop accept=".pdf,application/pdf" maxSizeMB={15} fileName={fileName} onFile={(file) => setFileName(file.name)} />
           </div>
-          {fileName && <p className="mt-2 text-xs text-slate-500">Selected: {fileName}</p>}
+          {fileName && <p className="mt-2 text-xs text-slate-500">{t('ui.selected', { file: fileName })}</p>}
         </Card>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-2">
-        <Card title="Empty & date states" description="Use helpful empty messages instead of blank screens">
-          <EmptyState title="No discrepancies" description="There are no open discrepancy flags for this record." icon={<Check size={22} />} action={<Button size="sm" variant="secondary">View cleared flags</Button>} />
-          <p className="mt-4 text-xs text-slate-500">Date formatting example: {formatDate('2026-10-24T10:15:00Z')}</p>
+        <Card title={t('ui.emptyDate')} description={t('ui.emptyDescription')}>
+          <EmptyState title={t('ui.noDiscrepancies')} description={t('ui.noOpenFlags')} icon={<Check size={22} />} action={<Button size="sm" variant="secondary">{t('ui.viewCleared')}</Button>} />
+          <p className="mt-4 text-xs text-slate-500">{t('ui.dateExample', { date: formatDate('2026-10-24T10:15:00Z', language) })}</p>
         </Card>
-        <Card title="Responsive layout" description="The portal shell adapts for a 360px mobile viewport">
+        <Card title={t('ui.responsive')} description={t('ui.responsiveDescription')}>
           <div className="rounded-xl bg-navy-800 p-5 text-white">
-            <div className="flex items-start justify-between gap-4"><div><span className="text-xs font-bold uppercase tracking-[0.16em] text-slate-300">Obligation coverage</span><p className="mt-2 text-2xl font-bold">{formatINR(450000000)}</p><p className="mt-1 text-xs text-slate-300">Confirmed of {formatINR(600000000)} required</p></div><div className="rounded-xl bg-white/10 p-3"><ShieldCheck size={21} /></div></div>
+            <div className="flex items-start justify-between gap-4"><div><span className="text-xs font-bold uppercase tracking-[0.16em] text-slate-300">{t('ui.coverage')}</span><p className="mt-2 text-2xl font-bold">{formatINR(450000000)}</p><p className="mt-1 text-xs text-slate-300">{t('ui.confirmedOf', { required: formatINR(600000000) })}</p></div><div className="rounded-xl bg-white/10 p-3"><ShieldCheck size={21} /></div></div>
             <div className="mt-5 h-2 overflow-hidden rounded-full bg-white/15"><div className="h-full w-3/4 rounded-full bg-emerald-400" /></div>
-            <div className="mt-3 flex justify-between text-xs text-slate-300"><span>75% covered</span><span>Illustrative</span></div>
+            <div className="mt-3 flex justify-between text-xs text-slate-300"><span>{t('ui.covered', { percent: 75 })}</span><span>{t('ui.illustrative')}</span></div>
           </div>
         </Card>
       </div>
 
-      <Modal open={modalOpen} title="Reusable dialog" description="Modal shell with a clear close action and keyboard dismissal." onClose={() => setModalOpen(false)} footer={<Button onClick={() => setModalOpen(false)}>Done</Button>}>
-        <p className="text-sm leading-6 text-slate-600">Dialogs keep the current task in context and place the primary action in a consistent footer.</p>
+      <Modal open={modalOpen} title={t('ui.modalTitle')} description={t('ui.modalDescription')} onClose={() => setModalOpen(false)} footer={<Button onClick={() => setModalOpen(false)}>{t('nav.cancel')}</Button>}>
+        <p className="text-sm leading-6 text-slate-600">{t('ui.modalContent')}</p>
       </Modal>
-      <StepUpModal open={stepUpOpen} onClose={() => setStepUpOpen(false)} onSubmit={async (pin) => { setStepUpMessage(`Demo PIN submitted (${pin.length} digits). Wire this action to /auth/step-up.`); setStepUpOpen(false); }} />
+      <StepUpModal open={stepUpOpen} onClose={() => setStepUpOpen(false)} onSubmit={async (pin) => { setStepUpMessage(t('ui.stepUpMessage', { digits: pin.length })); setStepUpOpen(false); }} />
       {stepUpMessage && <div role="status" className="fixed bottom-5 left-1/2 z-40 -translate-x-1/2 rounded-xl bg-navy-900 px-4 py-3 text-sm text-white shadow-lg">{stepUpMessage}</div>}
     </div>
   );

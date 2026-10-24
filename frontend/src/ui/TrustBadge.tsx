@@ -1,5 +1,5 @@
 import { Check, CircleDashed, ShieldCheck } from 'lucide-react';
-import { humanizeEnum } from '../api/format';
+import { useLanguage } from '../shell/language';
 
 export type TrustLevel = 'L0_CLAIMED' | 'L1_ATTESTED' | 'L2_BANK_CONFIRMED';
 
@@ -22,18 +22,19 @@ export function TrustBadge({
   setAt?: string;
   compact?: boolean;
 }) {
+  const { t, label } = useLanguage();
   const detail = trustDetails[trust];
   const Icon = detail.icon;
   const tooltip = [
-    detail.label,
-    source && `Source: ${source}`,
-    evidenceRef && `Evidence: ${evidenceRef}`,
-    setAt && `Set: ${setAt}`,
+    label(trust),
+    source && t('trust.source', { source }),
+    evidenceRef && t('trust.evidence', { evidence: evidenceRef }),
+    setAt && t('trust.set', { date: setAt }),
   ].filter(Boolean).join('\n');
   return (
-    <span className={`trust-badge ${detail.className}`} title={tooltip} aria-label={`${humanizeEnum(trust)}${source ? `, source ${source}` : ''}`}>
+    <span className={`trust-badge ${detail.className}`} title={tooltip} aria-label={`${label(trust)}${source ? `, ${t('trust.source', { source })}` : ''}`}>
       <Icon size={compact ? 12 : 14} />
-      {!compact && <span>{detail.label}</span>}
+      {!compact && <span>{label(trust)}</span>}
     </span>
   );
 }

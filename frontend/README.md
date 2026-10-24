@@ -9,4 +9,5 @@ Reusable components live in `src/ui/`; authenticated user, role and demo clock s
 API calls go through `src/api/client.ts`, which attaches the session token and exposes structured `ApiError`s.
 Use integer paise for amounts and `formatINR`; use `formatDate` for readable dates.
 The role switcher logs in as the selected demo user and prompts for that user's password; it never bypasses backend auth.
+The English / हिन्दी switch is available before and after login; use `useLanguage()` and `t('key')` for translated feature UI.
 `/ui-kit` is the interactive component and state showcase.

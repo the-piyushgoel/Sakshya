@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { useLanguage } from '../shell/language';
 
 export interface DataColumn<T> {
   key: string;
@@ -11,14 +12,15 @@ export function DataTable<T>({
   rows,
   columns,
   rowKey,
-  emptyMessage = 'No records to show.',
+  emptyMessage,
 }: {
   rows: T[];
   columns: DataColumn<T>[];
   rowKey: (row: T) => string;
   emptyMessage?: string;
 }) {
-  if (rows.length === 0) return <div className="py-8 text-center text-sm text-slate-500">{emptyMessage}</div>;
+  const { t } = useLanguage();
+  if (rows.length === 0) return <div className="py-8 text-center text-sm text-slate-500">{emptyMessage ?? t('table.empty')}</div>;
   return (
     <div className="-mx-5 overflow-x-auto sm:-mx-6">
       <table className="data-table">

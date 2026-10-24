@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { humanizeEnum } from '../api/format';
+import { useLanguage } from '../shell/language';
 
 export type BadgeTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger';
 
@@ -15,5 +15,6 @@ const stateTones: Record<string, BadgeTone> = {
 };
 
 export function StatusPill({ value }: { value: string }) {
-  return <Badge tone={stateTones[value] ?? 'neutral'}>{humanizeEnum(value)}</Badge>;
+  const { label } = useLanguage();
+  return <Badge tone={stateTones[value] ?? 'neutral'}>{label(value)}</Badge>;
 }

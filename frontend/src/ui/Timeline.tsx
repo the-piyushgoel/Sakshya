@@ -1,4 +1,5 @@
 import { Check, Circle, Clock3 } from 'lucide-react';
+import { useLanguage } from '../shell/language';
 
 export interface TimelineEvent {
   title: string;
@@ -8,7 +9,8 @@ export interface TimelineEvent {
 }
 
 export function Timeline({ events }: { events: TimelineEvent[] }) {
-  if (events.length === 0) return <p className="py-5 text-sm text-slate-500">No activity recorded yet.</p>;
+  const { t } = useLanguage();
+  if (events.length === 0) return <p className="py-5 text-sm text-slate-500">{t('timeline.empty')}</p>;
   return (
     <ol className="space-y-0">
       {events.map((event, index) => (

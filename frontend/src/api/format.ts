@@ -11,12 +11,12 @@ export function formatINR(paise: number): string {
   }).format(paise / 100);
 }
 
-export function formatDate(value: string | null | undefined): string {
+export function formatDate(value: string | null | undefined, language: 'en' | 'hi' = 'en'): string {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
 
-  return new Intl.DateTimeFormat('en-IN', {
+  return new Intl.DateTimeFormat(language === 'hi' ? 'hi-IN' : 'en-IN', {
     day: '2-digit',
     month: 'short',
     year: 'numeric',
