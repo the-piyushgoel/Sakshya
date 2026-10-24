@@ -32,6 +32,7 @@ export function setAccessToken(token: string | null): void {
 export async function apiRequest<T>(
   path: string,
   init: RequestInit = {},
+  options: { authenticated?: boolean; notifyErrors?: boolean } = {},
 ): Promise<T> {
   const headers = new Headers(init.headers);
   const token = getAccessToken();
@@ -40,6 +41,7 @@ export async function apiRequest<T>(
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
+  if (options.authenticated === false) headers.delete('Authorization');
 
   let response: Response;
   try {
@@ -47,7 +49,7 @@ export async function apiRequest<T>(
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Network request failed';
     const apiError = new ApiError(message, 'DEPENDENCY_UNAVAILABLE', 0);
-    window.dispatchEvent(new CustomEvent('sakshya:api-error', { detail: apiError }));
+    if (options.notifyErrors !== false) window.dispatchEvent(new CustomEvent('sakshya:api-error', { detail: apiError }));
     throw apiError;
   }
 
@@ -64,7 +66,7 @@ export async function apiRequest<T>(
       response.status,
       body.error?.details,
     );
-    window.dispatchEvent(new CustomEvent('sakshya:api-error', { detail: apiError }));
+    if (options.notifyErrors !== false) window.dispatchEvent(new CustomEvent('sakshya:api-error', { detail: apiError }));
     throw apiError;
   }
 
@@ -80,5 +82,17 @@ export const api = {
       method: 'POST',
       body: body === undefined ? undefined : JSON.stringify(body),
     });
+  },
+};
+
+export const publicApi = {
+  get<T>(path: string): Promise<T> {
+    return apiRequest<T>(path, {}, { authenticated: false, notifyErrors: false });
+  },
+  post<T>(path: string, body: unknown): Promise<T> {
+    return apiRequest<T>(path, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }, { authenticated: false, notifyErrors: false });
   },
 };
