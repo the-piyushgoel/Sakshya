@@ -19,6 +19,7 @@ if str(_BACKEND_DIR) not in sys.path:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core import clock, policy
 from app.core.db import create_tables
 from app.core.errors import SakshyaError, sakshya_error_handler
 from app.core.router import router as core_router
@@ -28,6 +29,8 @@ from app.core.router import router as core_router
 async def lifespan(app: FastAPI):
     os.makedirs(_BACKEND_DIR / "data" / "files", exist_ok=True)
     create_tables()
+    clock.sync_from_db()
+    policy.reload_cache()
     yield
 
 
