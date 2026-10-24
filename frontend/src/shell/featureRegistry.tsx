@@ -12,7 +12,7 @@ export interface FeatureNavItem {
   label: string;
   path: string;
   icon?: 'dashboard' | 'obligations' | 'register' | 'bank' | 'release' | 'discrepancies' | 'documents' | 'audit' | 'verify';
-  section?: 'institute' | 'support';
+  section?: 'institute' | 'support' | 'release' | 'finance';
   disabled?: boolean;
   roles?: Role[];
 }

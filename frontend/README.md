@@ -16,4 +16,6 @@ The institute portal lives in `src/features/institute/` and provides obligation 
 
 Public release-letter verification is available at `/verify` and `/verify/:code?h=...` without the authenticated shell. Requests use the public API client (no authorization header); no-match responses intentionally use one uniform message without returning record details.
 
+The PA-4 release authority workspace is available to `RELEASE_AUTHORITY` at `/release-desk`; it reviews pending signatures, requires step-up before signing, shows the release payload and fingerprint, opens the signed PDF, and supports reasoned revocation. Finance officers use `/finance/settlements` to reconcile credited amounts, document mismatches, and review closed cases. Both workspaces call the endpoints in `docs/CONTRACT.md`; end-to-end actions require those backend routes to be implemented and available.
+
 In Vite development, authentication is bypassed by default so the UI can be previewed without signing in; use the role selector to switch preview workspaces. Set `VITE_AUTH_BYPASS=false` in the frontend environment and restart Vite to restore local sign-in. The bypass is disabled in production builds and does not mock or bypass backend API authentication.
