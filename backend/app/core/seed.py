@@ -3,10 +3,10 @@ Deterministic seed data for core system users, clock, policies, and audit genesi
 """
 from uuid import NAMESPACE_URL, uuid5
 
-from app.core import audit, clock
+from app.core import audit, clock, notify
 from app.core.db import SessionLocal
 from app.core.enums import Role
-from app.core.models import AuditEvent, ClockState, PolicyVersion, User
+from app.core.models import AuditEvent, ClockState, Notification, PolicyVersion, User
 from app.core.policy import DEFAULT_POLICIES
 from app.core.security import hash_password
 from app.modules.bank.ids import bank_id
@@ -102,6 +102,34 @@ def seed() -> None:
                     "description": "Sakshya Genesis Cryptographic Anchor Block",
                 },
                 actor_role=Role.SYSTEM_ADMIN.value,
+                db=session,
+            )
+            session.commit()
+
+        # 5. Seed Welcome Notifications (§3.4, §7.8)
+        if session.query(Notification).count() == 0:
+            notify.send(
+                title="Welcome to Sakshya FDR Portal",
+                body="Your institute portal is active. You can now upload FDR certificates for validation.",
+                user_id=user_id("ar_sig"),
+                institute_id=institute_id("aryabhatta"),
+                dedupe_key="seed:welcome:ar_sig",
+                db=session,
+            )
+            notify.send(
+                title="System Ready: Scrutiny Queue",
+                body="Prototype accounts initialized. Scrutiny and verification queues are ready.",
+                user_id=user_id("so1"),
+                role=Role.SCRUTINY_OFFICER.value,
+                dedupe_key="seed:welcome:so1",
+                db=session,
+            )
+            notify.send(
+                title="Genesis Anchor Initialized",
+                body="Cryptographic audit chain genesis block has been sealed.",
+                user_id=user_id("aud1"),
+                role=Role.AUDITOR.value,
+                dedupe_key="seed:welcome:aud1",
                 db=session,
             )
             session.commit()

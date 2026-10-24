@@ -1,5 +1,5 @@
 """
-Core database models for Sakshya — User, Audit, Clock, and Policy (§3.4, §7.7, §6.4).
+Core database models for Sakshya — User, Audit, Clock, Policy, Notifications, and Jobs (§3.4, §7.7, §6.4, §7.8).
 """
 from datetime import datetime
 from typing import Any
@@ -99,3 +99,64 @@ class PolicyVersion(Base):
     parameters_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=clock.now, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class Notification(Base):
+    """
+    In-app alert and notification entity (§3.4, §7.8).
+    Supports targeting by user, role, institute, or bank, with deduplication keys.
+    """
+    __tablename__ = "notifications"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    role: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    institute_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    bank_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    body: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    level: Mapped[str] = mapped_column(String(32), default="INFO", nullable=False)
+    link: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=clock.now, nullable=False, index=True)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "body": self.body,
+            "level": self.level,
+            "link": self.link,
+            "read": self.read,
+            "user_id": self.user_id,
+            "role": self.role,
+            "institute_id": self.institute_id,
+            "bank_id": self.bank_id,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class JobRun(Base):
+    """
+    Execution record for background scheduled jobs (§1.3, §3.5).
+    Guarantees idempotency across ticks and time travel.
+    """
+    __tablename__ = "job_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_name: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    dedupe_key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    ran_at: Mapped[datetime] = mapped_column(DateTime, default=clock.now, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    details_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "job_name": self.job_name,
+            "dedupe_key": self.dedupe_key,
+            "ran_at": self.ran_at.isoformat() if self.ran_at else None,
+            "status": self.status,
+            "details": self.details_json or {},
+        }

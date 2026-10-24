@@ -110,6 +110,29 @@ def main() -> None:
             assert r_fixed.json()["ok"] is True
             print("  ✓ repair demo restored audit hash chain")
 
+            # PR-4: Notifications Subsystem
+            r_notifs = client.get("/api/notifications", headers=headers)
+            check("GET /api/notifications (ar_sig) → 200", r_notifs, 200)
+            notifs_data = r_notifs.json()
+            assert notifs_data["total"] >= 1
+            first_notif_id = notifs_data["items"][0]["id"]
+            print("  ✓ institute notifications retrieved")
+
+            r_mark_read = client.post(f"/api/notifications/{first_notif_id}/read", headers=headers)
+            check(f"POST /api/notifications/{first_notif_id}/read → 200", r_mark_read, 200)
+            assert r_mark_read.json()["read"] is True
+
+            r_mark_all = client.post("/api/notifications/read-all", headers=headers)
+            check("POST /api/notifications/read-all → 200", r_mark_all, 200)
+            print("  ✓ mark-read endpoints verified")
+
+            # PR-4: Job Registry & Scheduled Tick
+            r_tick = client.post("/api/admin/tick", headers=admin_headers)
+            check("POST /api/admin/tick → 200", r_tick, 200)
+            assert r_tick.json()["status"] == "ok"
+            assert len(r_tick.json()["jobs_run"]) >= 1
+            print("  ✓ background tick engine executed")
+
     except httpx.ConnectError:
         print(f"  ✗ Cannot connect to {BASE}. Ensure backend is running ('make run').")
         sys.exit(1)

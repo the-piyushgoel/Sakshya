@@ -19,6 +19,12 @@ Endpoints:
     POST /admin/clock/reset
   Policy Parameters (§6.4):
     GET  /policy
+  Notifications Subsystem (§3.4, §7.8):
+    GET  /notifications
+    POST /notifications/{id}/read
+    POST /notifications/read-all
+  Job Registry & Scheduled Ticks (§1.3, §3.5):
+    POST /admin/tick
 """
 from datetime import timedelta
 import os
@@ -28,7 +34,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.core import audit, clock, policy
+from app.core import audit, clock, jobs, notify, policy
 from app.core.db import get_db
 from app.core.deps import get_current_user, require_roles
 from app.core.enums import Role
@@ -130,13 +136,14 @@ class RepairDemoResponse(BaseModel):
     repaired_count: int
 
 
-# ── Clock Schemas ──────────────────────────────────────────────────────────────
+# ── Clock & Job Schemas ────────────────────────────────────────────────────────
 
 class ClockResponse(BaseModel):
     now: str
     current_time: str
     simulated_at: str
     offset_seconds: int
+    jobs_run: list[dict[str, Any]] | None = None
 
 
 class ClockAdvanceRequest(BaseModel):
@@ -145,6 +152,39 @@ class ClockAdvanceRequest(BaseModel):
     minutes: int = Field(default=0, ge=0)
     seconds: int = Field(default=0, ge=0)
     run_tick: bool = Field(default=False)
+
+
+class TickResponse(BaseModel):
+    status: str = "ok"
+    simulated_time: str
+    jobs_run: list[dict[str, Any]]
+
+
+# ── Notification Schemas ───────────────────────────────────────────────────────
+
+class NotificationOut(BaseModel):
+    id: str
+    title: str
+    body: str | None = None
+    level: str = "INFO"
+    link: str | None = None
+    read: bool = False
+    user_id: str | None = None
+    role: str | None = None
+    institute_id: str | None = None
+    bank_id: str | None = None
+    created_at: str | None = None
+
+
+class NotificationListResponse(BaseModel):
+    items: list[NotificationOut]
+    unread_count: int
+    total: int
+
+
+class NotificationReadResponse(BaseModel):
+    status: str = "ok"
+    marked_read: int
 
 
 # ── Authentication & User Endpoints ───────────────────────────────────────────
@@ -312,13 +352,14 @@ def repair_audit_demo(
 
 # ── Clock Persistence & Time-Travel Endpoints (§3.6) ──────────────────────────
 
-def _clock_response() -> ClockResponse:
+def _clock_response(jobs_run: list[dict[str, Any]] | None = None) -> ClockResponse:
     now_iso = clock.now().isoformat()
     return ClockResponse(
         now=now_iso,
         current_time=now_iso,
         simulated_at=now_iso,
         offset_seconds=clock.get_offset(),
+        jobs_run=jobs_run,
     )
 
 
@@ -334,7 +375,7 @@ def advance_clock(
     current_user: User = Depends(require_roles(Role.SYSTEM_ADMIN)),
     db: Session = Depends(get_db),
 ):
-    """Advance the simulated system clock and persist state."""
+    """Advance the simulated system clock, optionally trigger background tick, and persist state."""
     clock.advance(
         days=payload.days,
         hours=payload.hours,
@@ -352,11 +393,25 @@ def advance_clock(
             "hours": payload.hours,
             "minutes": payload.minutes,
             "seconds": payload.seconds,
+            "run_tick": payload.run_tick,
             "new_offset": clock.get_offset(),
         },
         db=db,
     )
-    return _clock_response()
+
+    jobs_run = None
+    if payload.run_tick:
+        jobs_run = jobs.run_all(db)
+        audit.log(
+            actor=current_user,
+            action="TICK_EXECUTED",
+            entity_type="JOB_RUNNER",
+            entity_id="advance_hook",
+            payload={"jobs_count": len(jobs_run)},
+            db=db,
+        )
+
+    return _clock_response(jobs_run=jobs_run)
 
 
 @router.post("/admin/clock/reset", response_model=ClockResponse)
@@ -377,6 +432,31 @@ def reset_clock(
     return _clock_response()
 
 
+# ── Job Registry & Scheduled Ticks (§1.3, §3.5) ────────────────────────────────
+
+@router.post("/admin/tick", response_model=TickResponse)
+def run_tick(
+    force: bool = Query(False, description="Force re-running jobs even if already executed for current slot"),
+    current_user: User = Depends(require_roles(Role.SYSTEM_ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Execute all registered background jobs in order with idempotent deduplication."""
+    jobs_run = jobs.run_all(db=db, force=force)
+    audit.log(
+        actor=current_user,
+        action="TICK_EXECUTED",
+        entity_type="JOB_RUNNER",
+        entity_id="admin_tick",
+        payload={"jobs_count": len(jobs_run), "force": force},
+        db=db,
+    )
+    return TickResponse(
+        status="ok",
+        simulated_time=clock.now().isoformat(),
+        jobs_run=jobs_run,
+    )
+
+
 # ── Policy Parameters (§6.4) ──────────────────────────────────────────────────
 
 @router.get("/policy")
@@ -389,3 +469,51 @@ def get_policy_parameters(
     if key is not None:
         return {"key": key, "value": policy.get(key, db=db)}
     return policy.get_all(db=db)
+
+
+# ── Notifications Endpoints (§3.4, §7.8) ───────────────────────────────────────
+
+@router.get("/notifications", response_model=NotificationListResponse)
+def list_notifications(
+    unread_only: bool = Query(False, description="Filter only unread notifications"),
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Retrieve notifications scoped to current_user (institute users never see officer alerts)."""
+    items, unread_count = notify.get_notifications(
+        current_user=current_user,
+        unread_only=unread_only,
+        limit=limit,
+        db=db,
+    )
+    return NotificationListResponse(
+        items=[NotificationOut(**n.to_dict()) for n in items],
+        unread_count=unread_count,
+        total=len(items),
+    )
+
+
+@router.post("/notifications/{notification_id}/read", response_model=NotificationOut)
+def mark_notification_read(
+    notification_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Mark a notification visible to current_user as read."""
+    notif = notify.mark_as_read(
+        notification_id=notification_id,
+        current_user=current_user,
+        db=db,
+    )
+    return NotificationOut(**notif.to_dict())
+
+
+@router.post("/notifications/read-all", response_model=NotificationReadResponse)
+def mark_all_notifications_read(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Mark all unread notifications visible to current_user as read."""
+    count = notify.mark_all_as_read(current_user=current_user, db=db)
+    return NotificationReadResponse(status="ok", marked_read=count)
