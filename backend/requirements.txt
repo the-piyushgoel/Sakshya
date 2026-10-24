@@ -1,0 +1,5 @@
+-r requirements/core.txt
+-r requirements/intake.txt
+-r requirements/insights.txt
+-r requirements/release.txt
+
