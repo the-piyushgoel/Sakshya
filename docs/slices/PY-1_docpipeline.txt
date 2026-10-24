@@ -1,0 +1,25 @@
+## 7.6 Document-intelligence pipeline
+
+```mermaid
+flowchart TB
+  IN["Document from object store"] --> T1["Type sniff and malware hook"]
+  T1 --> T2["Split pages and normalise DPI"]
+  T2 --> T3["Preprocess: deskew, denoise, contrast"]
+  T3 --> QRD{"QR or barcode found?"}
+  QRD -->|"yes"| QRP["Decode and parse with bank plugin"]
+  QRD -->|"no"| SKQ["Mark e-FDR check as not applicable"]
+  T3 --> OCR["OCR English and Hindi<br/>word boxes and confidences"]
+  OCR --> FX["Field extraction<br/>rules and layout cues"]
+  T2 --> TP["PDF structure checks<br/>revisions, producer, fonts"]
+  T3 --> TI["Image forensics<br/>error-level, copy-move,<br/>seal and signature presence"]
+  FX --> CV["Consistency validator"]
+  QRP --> CV
+  CV --> DUP["Duplicate search<br/>blind index, perceptual hash, fuzzy fields"]
+  TP --> AG["Aggregate results<br/>per check with confidence"]
+  TI --> AG
+  DUP --> AG
+  SKQ --> AG
+  AG --> OUT["Return flags only<br/>never approve or reject"]
+```
+
+All checks return `{check_name, outcome, confidence, details, model_version}`. A service failure yields `DEPENDENCY_UNAVAILABLE` and the case goes to manual review (principle P8).

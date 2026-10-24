@@ -1,0 +1,42 @@
+## 5.1 Instrument
+
+```mermaid
+stateDiagram-v2
+  [*] --> DRAFT
+  DRAFT --> SUBMITTED : signatory submits
+  DRAFT --> WITHDRAWN : withdrawn
+  SUBMITTED --> AUTO_CHECKING : intake pipeline starts
+  AUTO_CHECKING --> SCRUTINY : checks complete
+  SCRUTINY --> CHANGES_REQUESTED : officer requests changes
+  CHANGES_REQUESTED --> SUBMITTED : institute resubmits
+  SCRUTINY --> BANK_PENDING : bank confirmation requested
+  BANK_PENDING --> ACTIVE : L2 confirmed and AO activates
+  BANK_PENDING --> DISCREPANCY : bank exception
+  SCRUTINY --> DISCREPANCY : officer flag
+  DISCREPANCY --> SCRUTINY : resolved
+  DISCREPANCY --> REJECTED : rejected
+  SCRUTINY --> REJECTED : rejected
+  ACTIVE --> RENEWAL_DUE : renewal window opens
+  RENEWAL_DUE --> ACTIVE : renewed and lien reconfirmed
+  RENEWAL_DUE --> SUPERSEDED : replaced by new instrument
+  RENEWAL_DUE --> LAPSED : maturity passed unrenewed
+  LAPSED --> ACTIVE : late renewal accepted
+  LAPSED --> SUPERSEDED : replaced
+  ACTIVE --> MATURED : term complete and maturity reached
+  RENEWAL_DUE --> MATURED : term complete
+  ACTIVE --> RELEASE_LOCKED : special release path
+  MATURED --> RELEASE_LOCKED : included in release request
+  RELEASE_LOCKED --> MATURED : request withdrawn or letter expired
+  RELEASE_LOCKED --> ACTIVE : early release withdrawn
+  RELEASE_LOCKED --> RELEASED : bank executes
+  RELEASED --> CLOSED : settlement done
+  CLOSED --> [*]
+  REJECTED --> [*]
+  WITHDRAWN --> [*]
+  SUPERSEDED --> [*]
+```
+
+**Overlays (not states).** `ON_HOLD` (compliance hold) blocks release and renewal acceptance but not monitoring. `QUARANTINED` (suspected forgery) blocks all outward actions and notifies vigilance. Both are recorded in `hold` and visible on every screen.
+
+**Guards.** `SCRUTINY → BANK_PENDING` requires a complete document set. `BANK_PENDING → ACTIVE` requires: a confirmed bank request (L2 on principal, maturity, favouring, lien), no open high-severity discrepancy, AO ≠ the SO who scrutinised, and step-up authentication.
+

@@ -1,0 +1,9 @@
+### Measurable improvements → KPIs
+
+| Required improvement | KPI (T-202) | Evidence in demo |
+|---|---|---|
+| Record accuracy | Share of instruments with L2 on all critical fields; discrepancy rate | Dashboard KPI panel after S1–S6 |
+| Verification turnaround time | Submit → bank-confirmed median and p90 | Timeline of S1 with time travel |
+| Timely renewal monitoring | Renewals accepted before maturity; alert lead time | S3, S4 |
+| Reduction in manual tracking effort | Automated actions counted; estimated officer touch time (baseline labelled *assumed*) | KPI panel |
+| Visibility into pending cases | Aged pending cases, owner and SLA coverage | Queue and dashboard |

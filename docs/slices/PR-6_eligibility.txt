@@ -1,0 +1,36 @@
+## 7.4 Eligibility engine
+
+Rules run in order; each returns **PASS**, **WARN**, **FAIL** (blocking) or **MANUAL** (needs a human). Verdict: any FAIL → `INELIGIBLE`; else any MANUAL → `MANUAL_REVIEW`; else `ELIGIBLE` (WARNs listed).
+
+| Rule | Check |
+|---|---|
+| E-01 | Obligation exists and belongs to the requesting Trust |
+| E-02 | Requester is an active, authorised signatory |
+| E-03 | Every requested instrument is ACTIVE or MATURED with L2 on principal and lien |
+| E-04 | No other active release request on those instruments (release lock) |
+| E-05 | Case type conditions: TERM_COMPLETE → `term_end_date ≤ today`; special cases → required certificates present and verified |
+| E-06 | No active hold or quarantine on the obligation or institute |
+| E-07 | No open HIGH discrepancy (MEDIUM → WARN) |
+| E-08 | Latest bank confirmation younger than `recon_freshness_days`, else MANUAL (fresh pre-check required) |
+| E-09 | Partial release leaves the remaining obligation covered, else FAIL |
+| E-10 | Instrument maturity after term end → MANUAL (premature closure handling per policy) |
+| E-11 | Penalties applicable? compute and attach (WARN) |
+| E-12 | Trust beneficiary account details present and verified; authority letter valid |
+
+```mermaid
+flowchart TB
+  R0["Release request submitted"] --> R1["Load policy version and request data"]
+  R1 --> R2["Run rules E-01 to E-12 in order"]
+  R2 --> R3{"Any FAIL?"}
+  R3 -->|"yes"| IN["INELIGIBLE with reasons and fix hints"]
+  R3 -->|"no"| R4{"Any MANUAL?"}
+  R4 -->|"yes"| MR["MANUAL_REVIEW<br/>officer decision recorded"]
+  R4 -->|"no"| EL["ELIGIBLE<br/>WARNs listed"]
+  MR --> SCR["Scrutiny and recommendation"]
+  EL --> SCR
+  SCR --> RECOM["AO recommends"]
+  RECOM --> SIGN["RA signs with step-up"]
+  IN --> FIX["Institute fixes or officer closes"]
+```
+
+Policy key `recon_freshness_days` (default 90, VALIDATE) is part of §6.4.

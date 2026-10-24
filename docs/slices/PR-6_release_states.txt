@@ -1,0 +1,29 @@
+## 5.2 Release request
+
+```mermaid
+stateDiagram-v2
+  [*] --> DRAFT
+  DRAFT --> SUBMITTED : signatory submits
+  DRAFT --> WITHDRAWN : withdrawn
+  SUBMITTED --> ELIGIBILITY_RUN : automatic
+  ELIGIBILITY_RUN --> INELIGIBLE : rules failed
+  INELIGIBLE --> SUBMITTED : fixed and resubmitted
+  INELIGIBLE --> REJECTED : closed by officer
+  ELIGIBILITY_RUN --> SCRUTINY : passed or manual review
+  SCRUTINY --> RECOMMENDED : AO recommends
+  SCRUTINY --> REJECTED : AO rejects
+  SCRUTINY --> SUBMITTED : more information requested
+  RECOMMENDED --> APPROVED : RA signs with step-up
+  RECOMMENDED --> SCRUTINY : RA returns
+  APPROVED --> LETTER_EXPIRED : validity ends
+  LETTER_EXPIRED --> APPROVED : re-issued
+  APPROVED --> REVOKED : RA revokes
+  REVOKED --> SCRUTINY : reopened
+  APPROVED --> EXECUTED : bank acknowledges
+  EXECUTED --> SETTLEMENT_PENDING : finance review
+  SETTLEMENT_PENDING --> CLOSED : credits confirmed
+  CLOSED --> [*]
+  REJECTED --> [*]
+  WITHDRAWN --> [*]
+```
+

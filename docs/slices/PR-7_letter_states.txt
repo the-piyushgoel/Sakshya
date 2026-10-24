@@ -1,0 +1,17 @@
+## 5.3 Release letter
+
+```mermaid
+stateDiagram-v2
+  [*] --> ISSUED
+  ISSUED --> EXECUTED : bank acknowledgement
+  ISSUED --> EXPIRED : validity ends
+  ISSUED --> REVOKED : RA revokes
+  ISSUED --> SUPERSEDED : new letter issued
+  EXECUTED --> [*]
+  EXPIRED --> [*]
+  REVOKED --> [*]
+  SUPERSEDED --> [*]
+```
+
+A letter is **single-use**: only `ISSUED` letters verify as valid. Viewing or verifying does not consume it; the bank's execution acknowledgement does.
+

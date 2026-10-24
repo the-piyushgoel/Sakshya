@@ -1,0 +1,29 @@
+### SEQ-04 Activation with maker-checker (UC-23)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor AO as Approving Officer
+  participant UI as Case workspace
+  participant API as API
+  participant AZ as Authorization engine
+  participant DB as Database
+  participant EV as Event outbox
+  AO->>UI: open case and compare claimed extracted bank-confirmed values
+  AO->>UI: click Activate
+  UI->>API: POST activate
+  API->>AZ: check role scope state SOD and holds
+  AZ-->>API: allow or deny with reason
+  alt AO scrutinised this case
+    API-->>UI: 403 SOD_VIOLATION
+  else no L2 or open HIGH discrepancy
+    API-->>UI: 409 STATE_CONFLICT with reasons
+  else allowed
+    API-->>UI: 401 STEP_UP_REQUIRED
+    UI->>API: step-up with fresh TOTP then retry
+    API->>DB: state ACTIVE and attach obligation coverage
+    API->>EV: emit instrument.activated
+    EV-->>AO: audit entry and notifications and maturity schedule
+  end
+```
+

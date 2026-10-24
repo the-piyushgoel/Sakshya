@@ -1,0 +1,6 @@
+## 7.7 Token and audit-chain algorithms
+
+**Token.** 80 random bits from a CSPRNG → Crockford Base32 (16 characters) + 1 check character, displayed as `XXXX-XXXX-XXXX-XXXX-C`. Only `HMAC-SHA256(server_pepper, canonical_token)` is stored and compared in constant time. Redemption needs a successful OTP to the Trust's registered contact. Limits: 5 attempts per IP per 10 minutes, 20 per day per obligation hint, uniform error text.
+
+**Audit hash chain.** For entry *i*: `hash_i = SHA-256(hash_{i−1} ‖ canonical_json(entry_i))`; the first entry uses 64 zero characters. Inserts take a transaction-scoped advisory lock so order is total. `audit/verify-chain` recomputes from a given sequence range. The daily anchor signs the latest hash with the audit key and stores it (and emails it to the auditor mailbox), so deleting history is detectable even by a database administrator.
+

@@ -1,0 +1,25 @@
+## 7.8 Escalation ladders
+
+```mermaid
+flowchart LR
+  A0["Bank request created"] --> A1["Day 3<br/>reminder to bank maker"]
+  A1 --> A2["Day 7<br/>reminder to maker and checker"]
+  A2 --> A3["Day 14<br/>alternate contact and SO notified"]
+  A3 --> A4["Day 21<br/>AO notified and call-back required"]
+  A4 --> A5["Day 30<br/>TIMED_OUT and D-18 raised"]
+  A5 --> A6["Officer re-initiates<br/>or marks instrument at risk"]
+```
+
+```mermaid
+flowchart LR
+  M0["Maturity 180 days"] --> M1["Institute alert"]
+  M1 --> M2["90 days<br/>institute reminder"]
+  M2 --> M3["30 days<br/>institute and SO"]
+  M3 --> M4["7 days<br/>institute, SO, AO"]
+  M4 --> M5["Maturity passed unrenewed<br/>LAPSED and breach case"]
+  M5 --> M6["After N days<br/>escalate to RA"]
+```
+
+Offsets come from policy keys `bank_reminder_days`, `escalation_days`, `maturity_alert_days`.
+
+---

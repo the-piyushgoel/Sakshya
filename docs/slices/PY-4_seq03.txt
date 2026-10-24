@@ -1,0 +1,37 @@
+### SEQ-03 Hybrid lien confirmation (UC-08, UC-21, UC-41, UC-42)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor TS as Trust Signatory
+  actor SO as Scrutiny Officer
+  participant API as API
+  participant DIR as Bank directory
+  participant NOT as Notifications
+  actor BM as Bank Maker
+  actor BC as Bank Checker
+  participant DB as Database
+  actor AO as Approving Officer
+  TS->>API: download pre-filled lien mandate pack
+  TS-->>BM: gives mandate to bank offline
+  SO->>API: initiate bank confirmation for instrument
+  API->>DIR: resolve contacts for this bank from directory only
+  API->>DB: create bank request state CREATED
+  API->>NOT: send single-use secure link
+  NOT-->>BM: email and SMS with request reference
+  BM->>API: login with MFA and open request
+  API->>DB: state ACKNOWLEDGED
+  BM->>API: fill standard checklist and submit
+  API->>DB: state MAKER_SUBMITTED
+  BC->>API: review and authorise with step-up
+  API->>API: sign confirmation payload
+  API->>DB: store immutable confirmation and write L2 field trust
+  alt checklist clear
+    API->>DB: request CONFIRMED and mark ready for activation
+    API-->>AO: notify ready to activate
+  else exceptions or not found
+    API->>DB: request CONFIRMED_WITH_EXCEPTIONS or NOT_FOUND and raise discrepancies
+    API-->>SO: notify exceptions
+  end
+```
+

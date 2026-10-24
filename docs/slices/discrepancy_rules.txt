@@ -1,0 +1,24 @@
+## 6.11 Discrepancy rule catalogue
+
+| Rule | Condition | Severity | Auto-effect |
+|---|---|---|---|
+| D-01 | Principal differs from obligation requirement (short) | MEDIUM | Coverage WARN |
+| D-02 | Bank reports FDR not found | HIGH | Quarantine suggestion |
+| D-03 | Bank name vs IFSC prefix mismatch | MEDIUM | |
+| D-04 | FDR tenor shorter than remaining term | LOW (WARN) | Renewal chain tracked |
+| D-05 | Duplicate FDR number or fingerprint on another obligation | HIGH | Quarantine suggestion |
+| D-06 | Holder name does not include the Trust | MEDIUM | |
+| D-07 | Favouring name not in allowed list | HIGH | Blocks activation |
+| D-08 | Issue date after submission date | HIGH | |
+| D-09 | Maturity date before issue date | HIGH | |
+| D-10 | OCR value differs from entered value beyond threshold | MEDIUM | |
+| D-11 | QR payload differs from entered or OCR values | HIGH | |
+| D-12 | Tamper indicators present (indicative) | MEDIUM | Manual review required |
+| D-13 | Response received from a contact outside the directory | HIGH | Response rejected, security alert |
+| D-14 | Lien not marked | HIGH | Blocks activation |
+| D-15 | Other lien, loan or overdraft against FDR | HIGH | Blocks release |
+| D-16 | Principal reduced compared with earlier version or bank view | HIGH | |
+| D-17 | FDR closed or encashed at the bank | HIGH | Quarantine suggestion |
+| D-18 | Bank non-response beyond SLA | MEDIUM | Escalation ladder |
+| D-19 | Maturity date at bank differs from submitted | MEDIUM | |
+| D-20 | Physical original not logged within `custody_log_days` | LOW | Reminder |

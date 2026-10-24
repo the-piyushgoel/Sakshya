@@ -1,0 +1,31 @@
+### SEQ-08 Public verification, bank execution and settlement (UC-44, UC-50)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor TL as Bank teller
+  participant PUB as Public verify page
+  participant API as API
+  participant DB as Database
+  actor BM as Bank Maker
+  actor BC as Bank Checker
+  actor FO as Finance Officer
+  TL->>PUB: enter letter code and FDR number and IFSC
+  PUB->>API: POST public verify
+  API->>API: rate limit and CAPTCHA escalation
+  API->>DB: find letter and compare all three inputs
+  alt no match or mismatch
+    API-->>TL: uniform VERIFY_NO_MATCH
+    API->>DB: log failed attempt and counters
+  else match
+    API->>API: recompute hash and verify signature
+    API-->>TL: status amounts AICTE account and expiry
+  end
+  BM->>API: acknowledge execution with UTR amounts date
+  BC->>API: authorise execution
+  API->>DB: letter EXECUTED and instrument RELEASED
+  API-->>FO: settlement pending notification
+  FO->>API: confirm AICTE share credited
+  API->>DB: settlement confirmed and case CLOSED
+```
+

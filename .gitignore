@@ -1,0 +1,13 @@
+.env
+*.key
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+dist/
+data/
+*.db
+*.sqlite3
+frontend/src/api/generated.ts
+.DS_Store

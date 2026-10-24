@@ -1,0 +1,32 @@
+## 6.4 Policy parameter catalogue
+
+| Key | Default | Type | Meaning | Flag |
+|---|---|---|---|---|
+| `deposit_term_years` | 10 | int | Term of obligation | VALIDATE |
+| `amount_table` | imported table | json | Required amount by category and level | VALIDATE |
+| `leased_multiplier` | 2 | decimal | Multiplier for leased premises | VALIDATE |
+| `favouring_names` | ["Member Secretary, AICTE"] | json | Accepted favouring names | VALIDATE |
+| `min_fdr_tenor_months` | 12 | int | Minimum tenor warning | |
+| `count_provisional_towards_coverage` | false | bool | Whether unconfirmed instruments count | |
+| `provisional_window_days` | 30 | int | Time allowed before escalation | VALIDATE |
+| `token_ttl_days` | 30 | int | Token validity | |
+| `letter_validity_days` | 14 | int | Release letter validity | |
+| `maturity_alert_days` | [180, 90, 30, 7] | json | Alert offsets | |
+| `bank_reminder_days` | [3, 7, 14] | json | Reminder cadence for bank requests | |
+| `escalation_days` | [14, 21] | json | Escalation checkpoints | |
+| `bank_request_timeout_days` | 30 | int | Final timeout | |
+| `recon_default_cadence` | QUARTERLY | enum | Default reconciliation | |
+| `high_risk_threshold` | 70 | int | Score for monthly reconciliation | |
+| `recon_spot_check_pct` | 2 | decimal | Random sample call-back percentage | |
+| `recon_freshness_days` | 90 | int | Maximum age of last bank confirmation before release (eligibility E-08) | VALIDATE |
+| `penalty_rules` | table | json | Penalty percentage by case type | VALIDATE |
+| `interest_destination` | AICTE account | json | Beneficiary and account details for AICTE share | VALIDATE |
+| `approval_matrix` | MS signs, AO recommends | json | Who recommends/signs by case type and amount | VALIDATE |
+| `release_case_types` | table | json | Required certificates per case type | VALIDATE |
+| `cash_deposit_enabled` | false | bool | Feature flag | VALIDATE |
+| `custody_log_days` | 5 | int | Time to log a physical original | VALIDATE |
+| `retention_years` | 10 | int | Record retention after closure | |
+| `risk_weights` | see §7.3 | json | Risk score weights | |
+| `upload_max_mb` | 15 | int | Per-file limit | |
+| `otp_ttl_minutes` | 10 | int | OTP validity | |
+| `step_up_ttl_minutes` | 5 | int | Step-up freshness | |

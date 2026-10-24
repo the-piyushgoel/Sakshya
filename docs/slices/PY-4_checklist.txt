@@ -1,0 +1,18 @@
+## 7.5 Standard bank lien confirmation checklist
+
+| # | Field | Expected | Trust effect |
+|---|---|---|---|
+| 1 | FDR exists and is open | Yes | Existence L2 |
+| 2 | Holder name(s) | Includes the Trust | Holder L2 |
+| 3 | Principal amount | Equals submitted | Principal L2 |
+| 4 | Issue date | Equals submitted | Date L2 |
+| 5 | Maturity date and interest rate | Equals submitted | Maturity L2 |
+| 6 | Favouring | Allowed name | Favouring L2 |
+| 7 | Lien marked in favour of AICTE, with lien reference and date | Yes | Lien L2 |
+| 8 | No other lien, loan or overdraft against the FDR | Yes | D-15 if no |
+| 9 | Premature closure, renewal or modification blocked without AICTE's written consent | Yes | Control L2 |
+| 10 | Auto-renewal flag and renewal tenor | Recorded | Informational |
+| 11 | Accrued interest to date | Recorded | Settlement input |
+| 12 | Remarks and bank officer details (maker, checker) | Recorded | Audit |
+
+Any "No" or mismatch becomes an exception with the bank's explanation and creates a discrepancy.

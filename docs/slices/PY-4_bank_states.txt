@@ -1,0 +1,23 @@
+## 5.4 Bank confirmation request
+
+```mermaid
+stateDiagram-v2
+  [*] --> CREATED
+  CREATED --> NOTIFIED : notification sent
+  CREATED --> CANCELLED : cancelled
+  NOTIFIED --> ACKNOWLEDGED : bank opens request
+  NOTIFIED --> ESCALATED : SLA breached
+  ACKNOWLEDGED --> MAKER_SUBMITTED : maker submits checklist
+  MAKER_SUBMITTED --> CONFIRMED : checker authorises all clear
+  MAKER_SUBMITTED --> CONFIRMED_WITH_EXCEPTIONS : checker authorises with exceptions
+  MAKER_SUBMITTED --> NOT_FOUND : checker authorises not found
+  MAKER_SUBMITTED --> ACKNOWLEDGED : checker returns to maker
+  ESCALATED --> ACKNOWLEDGED : bank responds
+  ESCALATED --> TIMED_OUT : final timeout
+  TIMED_OUT --> NOTIFIED : officer re-initiates
+  CONFIRMED --> [*]
+  CONFIRMED_WITH_EXCEPTIONS --> [*]
+  NOT_FOUND --> [*]
+  CANCELLED --> [*]
+```
+

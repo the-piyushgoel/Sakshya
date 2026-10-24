@@ -1,0 +1,30 @@
+## 7.3 Risk score and priority queue
+
+Score ∈ [0, 100] = `round(100 × Σ wᵢ · fᵢ)` with factors normalised to [0, 1]:
+
+| Factor | Definition | Default weight |
+|---|---|---|
+| `f_flags` | min(1, Σ severity points / 6) where HIGH = 3, MEDIUM = 1.5, LOW = 0.5, tamper indicative = 1 | 0.25 |
+| `f_aging` | min(1, days in current state / 60) | 0.20 |
+| `f_amount` | percentile rank of principal among active instruments | 0.15 |
+| `f_maturity` | 1 for LAPSED; otherwise 1 − min(1, days_to_maturity / 180) inside the window, else 0 | 0.15 |
+| `f_bank` | bank non-response and delay history (normalised) | 0.10 |
+| `f_inst` | institute history: past lapses and discrepancies | 0.10 |
+| `f_recon` | days since last L2 confirmation ÷ cadence length, capped at 1 | 0.05 |
+
+**Queue priority** = score + 20 if the SLA is breached + 10 if due within 2 days; ties broken by age. The factor breakdown is stored in `risk_score.factors` and shown to officers as "why this is first".
+
+```mermaid
+flowchart LR
+  F1["Flags and discrepancies"] --> W["Weighted sum<br/>policy weights"]
+  F2["Aging in state"] --> W
+  F3["Amount percentile"] --> W
+  F4["Maturity proximity or lapse"] --> W
+  F5["Bank responsiveness"] --> W
+  F6["Institute history"] --> W
+  F7["Reconciliation staleness"] --> W
+  W --> SC["Risk score 0 to 100"]
+  SC --> PR["Priority = score + SLA boosts"]
+  PR --> Q["Officer queue<br/>with factor explanation"]
+  SC -->|"score at least threshold"| RC["Monthly reconciliation cadence"]
+```

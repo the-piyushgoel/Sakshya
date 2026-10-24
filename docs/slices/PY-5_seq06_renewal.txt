@@ -1,0 +1,27 @@
+### SEQ-06 Renewal with a new FDR number (UC-10, UC-26)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor TS as Trust Signatory
+  participant API as API
+  participant DB as Database
+  actor SO as Scrutiny Officer
+  actor BM as Bank Maker
+  actor AO as Approving Officer
+  participant MON as Monitoring
+  MON-->>TS: maturity alert 180 days
+  TS->>API: start renewal with new number and new maturity
+  API->>DB: create version 2 with supersedes link and L0 fields
+  API->>DB: coverage unchanged while old version still valid
+  SO->>API: request bank confirmation for new number
+  BM->>API: confirm lien on new number
+  API->>DB: write L2 for version 2
+  AO->>API: accept renewal with step-up
+  API->>DB: version 2 current and version 1 history preserved
+  API->>MON: reschedule alerts for new maturity
+  alt lien not confirmed before old maturity
+    MON->>DB: state LAPSED and breach escalation
+  end
+```
+
