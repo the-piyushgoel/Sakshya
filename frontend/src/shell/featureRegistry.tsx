@@ -11,7 +11,9 @@ export interface FeatureRoute {
 export interface FeatureNavItem {
   label: string;
   path: string;
-  icon?: string;
+  icon?: 'dashboard' | 'obligations' | 'register' | 'bank' | 'release' | 'discrepancies' | 'documents' | 'audit' | 'verify';
+  section?: 'institute' | 'support';
+  disabled?: boolean;
   roles?: Role[];
 }
 

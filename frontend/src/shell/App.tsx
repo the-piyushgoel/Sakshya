@@ -7,7 +7,8 @@ import { LoginPage } from './LoginPage';
 import { UiKitPage } from './UiKitPage';
 
 export default function App() {
-  const { user, loading } = useAuth();
+  const { user, loading, authBypassed } = useAuth();
+  const landingPath = authBypassed ? '/institute' : '/ui-kit';
   const navItems = useMemo(
     () => featureNavItems.filter((item) => !item.roles || item.roles.some((role) => user?.roles.includes(role))),
     [user],
@@ -19,7 +20,7 @@ export default function App() {
 
   return (
     <Routes>
-      <Route path="/login" element={user ? <Navigate to="/ui-kit" replace /> : <LoginPage />} />
+      <Route path="/login" element={user ? <Navigate to={landingPath} replace /> : <LoginPage />} />
       {featureRoutes.filter((route) => route.public).map((route, index) => (
         <Route key={`public-${route.path}-${index}`} path={route.path} element={route.element} />
       ))}
@@ -28,7 +29,7 @@ export default function App() {
       ) : (
         <>
           <Route element={<AppShell navItems={navItems} />}>
-            <Route index element={<Navigate to="/ui-kit" replace />} />
+            <Route index element={<Navigate to={landingPath} replace />} />
             <Route path="/ui-kit" element={<UiKitPage />} />
             {featureRoutes
               .filter((route) => !route.roles || route.roles.some((role) => user.roles.includes(role)))

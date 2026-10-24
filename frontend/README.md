@@ -8,6 +8,10 @@ Export navigation items with `label`, `path`, and optional `roles` to control wh
 Reusable components live in `src/ui/`; authenticated user, role and demo clock state live in `src/shell/`.
 API calls go through `src/api/client.ts`, which attaches the session token and exposes structured `ApiError`s.
 Use integer paise for amounts and `formatINR`; use `formatDate` for readable dates.
-The role switcher logs in as the selected demo user and prompts for that user's password; it never bypasses backend auth.
+With authentication enabled, the role switcher logs in as the selected demo user and prompts for that user's password; it never bypasses backend auth.
 The English / हिन्दी switch is available before and after login; use `useLanguage()` and `t('key')` for translated feature UI.
 `/ui-kit` is the interactive component and state showcase.
+
+The institute portal lives in `src/features/institute/` and provides obligation coverage, FDR preview/review/submission, instrument details and renewal, release requests, and notifications. It calls the endpoints in `docs/CONTRACT.md`; live workflows require the corresponding backend routes to be implemented and available.
+
+In Vite development, authentication is bypassed by default so the UI can be previewed without signing in; use the role selector to switch preview workspaces. Set `VITE_AUTH_BYPASS=false` in the frontend environment and restart Vite to restore local sign-in. The bypass is disabled in production builds and does not mock or bypass backend API authentication.
