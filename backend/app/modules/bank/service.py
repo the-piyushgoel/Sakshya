@@ -153,3 +153,7 @@ def receive_response_from_contact(request_id: str, contact_email: str, payload: 
         raise
     finally:
         db.close()
+
+
+# Importing the bank service also registers the bank SLA job with the central runner.
+from app.modules.bank import sla as _sla  # noqa: F401
