@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 
 def submit_instrument(
     db: Session, *, institute_id: str, actor, obligation_id: str, filename: str,
-    data: bytes, entered: dict,
+    data: bytes, entered: dict, supersedes_id: str | None = None,
 ) -> InstrumentDetail:
     obligation = service.get_obligation(obligation_id, db)
     if not obligation or obligation.institute_id != institute_id:
@@ -74,6 +74,7 @@ def submit_instrument(
     instrument = Instrument(
         id=instrument_id, obligation_id=obligation.id, institute_id=institute_id,
         bank_id=bank.id, state=InstrumentState.SUBMITTED.value, is_quarantined=False,
+        supersedes_id=supersedes_id,
         # The existing column has a unique DB constraint. Keep the computed value
         # for first submissions; a detected duplicate is represented by D-05.
         fdr_fingerprint=None if duplicate else fdr_fingerprint,

@@ -300,12 +300,15 @@ def test_quarantine_reject_renew_actions():
     # Renew
     res_ren = client.post(
         f"/api/instruments/{renewal_id}/renew",
-        json={"new_maturity_date": "2029-10-24", "remarks": "Renewal approved"},
+        files={"file": ("renewal.pdf", b"ignored until mode validation", "application/pdf")},
+        data={"mode": "SAME_NUMBER", "fdr_number": "BRB-FDR-2027-000202",
+              "bank_ifsc": "BRBK0001234", "principal_paise": "250000000",
+              "issue_date": "2027-01-16", "maturity_date": "2030-01-15"},
         headers=ar_headers,
     )
-    assert res_ren.status_code == 200
-    ren_data = InstrumentActionResponse.model_validate(res_ren.json())
-    assert ren_data.state == InstrumentState.RENEWAL_DUE
+    assert res_ren.status_code == 422
+    assert res_ren.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert res_ren.json()["error"]["message"] == "mode not supported yet"
 
 
 def test_activate_step_up_guard():

@@ -10,7 +10,12 @@ from uuid import uuid4
 
 from app.core import audit, clock
 from app.core.db import SessionLocal
-from app.core.enums import DiscrepancyStatus, InstrumentState, ObligationState
+from app.core.enums import (
+    DiscrepancyStatus,
+    InstrumentState,
+    ObligationState,
+    TrustLevel,
+)
 from app.core.errors import InvalidStateError, NotFoundError
 from app.core.models import User
 from app.modules.intake.models import (
@@ -282,6 +287,26 @@ def transition(
             db=session,
         )
 
+        if to_state_str == InstrumentState.MATURED.value:
+            obligation = session.query(Obligation).filter(
+                Obligation.id == instrument.obligation_id,
+            ).first()
+            if obligation and obligation.end_date <= clock.now().date() and obligation.state != ObligationState.TERM_COMPLETE.value:
+                old_obligation_state = obligation.state
+                obligation.state = ObligationState.TERM_COMPLETE.value
+                audit.log(
+                    actor=actor,
+                    action="OBLIGATION_TERM_COMPLETED",
+                    entity_type="OBLIGATION",
+                    entity_id=obligation.id,
+                    payload={
+                        "from_state": old_obligation_state,
+                        "to_state": ObligationState.TERM_COMPLETE.value,
+                        "instrument_id": instrument_id,
+                    },
+                    db=session,
+                )
+
         if should_close:
             session.commit()
             session.refresh(instrument)
@@ -333,8 +358,8 @@ def recompute_coverage(
     """
     Recompute obligation coverage based on active instruments (§3.6).
 
-    Sums principal from valid instruments. Transitions obligation state
-    between PENDING_DEPOSIT, PARTIALLY_COVERED, COVERED, and TERM_COMPLETE.
+    Sums L2 principal from ACTIVE and RENEWAL_DUE instruments. Terminal
+    obligation states are owned by their workflow and are left untouched.
     """
     session = db or SessionLocal()
     should_close = db is None
@@ -342,6 +367,12 @@ def recompute_coverage(
         obligation = session.query(Obligation).filter(Obligation.id == obligation_id).first()
         if not obligation:
             raise NotFoundError(f"Obligation '{obligation_id}' not found")
+
+        if obligation.state in {"TERM_COMPLETE", "RELEASE_IN_PROGRESS", "CLOSED"}:
+            if should_close:
+                session.commit()
+                session.refresh(obligation)
+            return obligation
 
         instruments = (
             session.query(Instrument)
@@ -352,49 +383,28 @@ def recompute_coverage(
             .all()
         )
 
-        today = clock.now().date()
         old_state = obligation.state
-
-        # Check if obligation term is fulfilled
-        if obligation.end_date <= today:
-            term_eligible_states = {
-                InstrumentState.ACTIVE.value,
-                InstrumentState.RENEWAL_DUE.value,
-                InstrumentState.MATURED.value,
-            }
-            term_paise = 0
-            for ins in instruments:
-                if ins.state in term_eligible_states:
-                    val = get_field_value(ins, "principal_paise", session)
-                    if val:
-                        try:
-                            term_paise += int(val)
-                        except ValueError:
-                            pass
-            if term_paise >= obligation.required_paise:
-                new_state = ObligationState.TERM_COMPLETE.value
-            elif term_paise > 0:
-                new_state = ObligationState.PARTIALLY_COVERED.value
-            else:
-                new_state = ObligationState.PENDING_DEPOSIT.value
+        # Coverage counts only L2 principal from ACTIVE or RENEWAL_DUE FDRs.
+        active_states = {InstrumentState.ACTIVE.value, InstrumentState.RENEWAL_DUE.value}
+        active_paise = 0
+        for ins in instruments:
+            if ins.state not in active_states:
+                continue
+            fields = get_fields(ins.id, session)
+            if fields.get("principal_paise", {}).get("trust") != TrustLevel.L2_BANK_CONFIRMED.value:
+                continue
+            val = fields.get("principal_paise", {}).get("value")
+            if val:
+                try:
+                    active_paise += int(val)
+                except ValueError:
+                    pass
+        if active_paise >= obligation.required_paise:
+            new_state = ObligationState.COVERED.value
+        elif active_paise > 0:
+            new_state = ObligationState.PARTIALLY_COVERED.value
         else:
-            # Active term: only ACTIVE and RENEWAL_DUE count towards coverage
-            active_states = {InstrumentState.ACTIVE.value, InstrumentState.RENEWAL_DUE.value}
-            active_paise = 0
-            for ins in instruments:
-                if ins.state in active_states:
-                    val = get_field_value(ins, "principal_paise", session)
-                    if val:
-                        try:
-                            active_paise += int(val)
-                        except ValueError:
-                            pass
-            if active_paise >= obligation.required_paise:
-                new_state = ObligationState.COVERED.value
-            elif active_paise > 0:
-                new_state = ObligationState.PARTIALLY_COVERED.value
-            else:
-                new_state = ObligationState.PENDING_DEPOSIT.value
+            new_state = ObligationState.PENDING_DEPOSIT.value
 
         if old_state != new_state:
             obligation.state = new_state

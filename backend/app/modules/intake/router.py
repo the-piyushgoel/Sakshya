@@ -74,7 +74,6 @@ from app.modules.intake.schemas import (
     InstrumentField,
     InstrumentListResponse,
     InstrumentOut,
-    InstrumentRenewRequest,
     InstrumentVersion,
     ObligationListResponse,
     ObligationOut,
@@ -694,21 +693,84 @@ def reject_instrument(
         db.close()
 
 
-@router.post("/instruments/{instrument_id}/renew", response_model=InstrumentActionResponse)
+@router.post("/instruments/{instrument_id}/renew", response_model=InstrumentDetail)
 def renew_instrument(
     instrument_id: str,
-    payload: InstrumentRenewRequest,
-    current_user: User = Depends(require_roles(*_INTAKE_WRITE_ROLES)),
+    file: UploadFile = File(...),
+    mode: str = Form(...),
+    fdr_number: str = Form(...),
+    bank_ifsc: str = Form(...),
+    principal_paise: int = Form(...),
+    issue_date: str = Form(...),
+    maturity_date: str = Form(...),
+    interest_rate_pct: str = Form("7.25"),
+    holder_names: str | None = Form(None),
+    current_user: User = Depends(require_roles(Role.INS_SIGNATORY)),
 ):
-    """Initiate renewal of a maturing instrument."""
-    # TODO PY-2b: replace stub
-    if instrument_id not in _MOCK_INSTRUMENTS:
-        raise NotFoundError("Instrument", instrument_id)
-    new_mat = payload.new_maturity_date or "2028-10-24"
-    return InstrumentActionResponse(
-        id=instrument_id, state=InstrumentState.RENEWAL_DUE, is_quarantined=False,
-        message=f"Renewal initiated until {new_mat}",
-    )
+    """Submit a new-number renewal while keeping its predecessor in coverage."""
+    if mode != "NEW_NUMBER":
+        raise ValidationError("mode not supported yet")
+    data = file.file.read()
+    validate_pdf(data, file.filename or "")
+    entered = {
+        "fdr_number": fdr_number, "bank_ifsc": bank_ifsc,
+        "principal_paise": principal_paise, "issue_date": issue_date,
+        "maturity_date": maturity_date, "interest_rate_pct": interest_rate_pct,
+    }
+    if holder_names:
+        entered["holder_names"] = holder_names
+    db = SessionLocal()
+    try:
+        predecessor = service.get_instrument(instrument_id, db)
+        if not predecessor or predecessor.institute_id != current_user.institute_id:
+            raise NotFoundError("Instrument", instrument_id)
+        predecessor = service.ensure_not_quarantined(instrument_id, db)
+        if predecessor.state not in {
+            InstrumentState.ACTIVE.value, InstrumentState.RENEWAL_DUE.value,
+            InstrumentState.LAPSED.value,
+        }:
+            raise InvalidStateError("Only ACTIVE, RENEWAL_DUE, or LAPSED instruments can be renewed")
+        terminal_states = {
+            InstrumentState.REJECTED.value, InstrumentState.CLOSED.value,
+            InstrumentState.SUPERSEDED.value,
+        }
+        open_successor = db.query(Instrument).filter(
+            Instrument.supersedes_id == predecessor.id,
+            ~Instrument.state.in_(terminal_states),
+        ).first()
+        if open_successor:
+            raise InvalidStateError("An open renewal successor already exists")
+        old_fields = service.get_fields(predecessor.id, db)
+        old_number = old_fields.get("fdr_number", {}).get("value")
+        old_maturity = service.parse_date(old_fields.get("maturity_date", {}).get("value"))
+        new_maturity = service.parse_date(maturity_date)
+        if fdr_number == old_number:
+            raise ValidationError("New FDR number must differ from predecessor")
+        if not old_maturity or not new_maturity or new_maturity <= old_maturity:
+            raise ValidationError("New maturity date must be after predecessor maturity date")
+
+        detail = submit_instrument(
+            db, institute_id=predecessor.institute_id, actor=current_user,
+            obligation_id=predecessor.obligation_id, filename=file.filename or "document.pdf",
+            data=data, entered=entered, supersedes_id=predecessor.id,
+        )
+        db.add(InstrumentStateHistory(
+            id=stable_id("history", f"renewal-started:{detail.id}"),
+            instrument_id=predecessor.id, from_state=predecessor.state,
+            to_state=predecessor.state, actor_id=current_user.id,
+            reason=f"Renewal started with successor {detail.id}", at=service.clock.now(),
+        ))
+        audit.log(
+            actor=current_user, action="renewal_started", entity_type="INSTRUMENT",
+            entity_id=predecessor.id, payload={"successor_id": detail.id}, db=db,
+        )
+        db.commit()
+        return detail
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 @router.post("/instruments/{instrument_id}/activate", response_model=InstrumentDetail)
@@ -726,6 +788,21 @@ def activate_instrument(
         instrument = service.ensure_not_quarantined(instrument_id, db)
         if instrument.state != InstrumentState.SCRUTINY.value:
             raise InvalidStateError("Only an instrument in SCRUTINY can be activated")
+
+        predecessor = None
+        if instrument.supersedes_id:
+            predecessor = service.get_instrument(instrument.supersedes_id, db)
+            if not predecessor or predecessor.state not in {
+                InstrumentState.ACTIVE.value, InstrumentState.RENEWAL_DUE.value,
+                InstrumentState.LAPSED.value,
+            }:
+                raise InvalidStateError("Renewal predecessor cannot be superseded from its current state")
+            try:
+                from app.modules.release.service import get_active_hold
+            except ImportError:
+                get_active_hold = None
+            if get_active_hold and get_active_hold("INSTRUMENT", instrument.id, db=db):
+                raise InvalidStateError("An active hold blocks renewal activation")
 
         fields = service.get_fields(instrument_id, db)
         required_l2 = ("principal_paise", "maturity_date", "favouring", "lien_marked")
@@ -748,6 +825,18 @@ def activate_instrument(
         sod.ensure_different(current_user, instrument.scrutiny_officer_id,
                              "Approving officer cannot activate an instrument they scrutinised")
         service.transition(instrument_id, InstrumentState.ACTIVE, current_user, "Approving officer activated instrument", db)
+        if predecessor:
+            service.transition(
+                predecessor.id, InstrumentState.SUPERSEDED, current_user,
+                f"Superseded by renewal {instrument_id}", db,
+            )
+            notify.send(
+                title="FDR instrument superseded",
+                body=f"Instrument {predecessor.id} was superseded by {instrument_id}.",
+                role=Role.INS_SIGNATORY, institute_id=predecessor.institute_id,
+                level="INFO", link=f"/instruments/{predecessor.id}",
+                dedupe_key=f"instrument:{predecessor.id}:superseded:{instrument_id}", db=db,
+            )
         service.recompute_coverage(instrument.obligation_id, db)
         obligation = service.recompute_confirmed_coverage(instrument.obligation_id, db)
         notify.send(
