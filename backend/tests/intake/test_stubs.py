@@ -252,7 +252,7 @@ def test_discrepancies_list_and_resolve():
     disc_list = DiscrepancyListResponse.model_validate(res_list.json())
     assert disc_list.total >= 1
 
-    disc_id = disc_list.items[0].id
+    disc_id = stable_id("discrepancy", "filler-02")
     res_res = client.post(
         f"/api/discrepancies/{disc_id}/resolve",
         json={"action": "CLEAR", "note": "Verified with branch manager physically"},
@@ -281,23 +281,25 @@ def test_quarantine_reject_renew_actions():
     """Verify quarantine, reject, and renew operations."""
     ao_headers = auth_header("ao1")
     ar_headers = auth_header("ar_sig")
-    inst_id = stable_id("instrument", "aryabhatta")
+    quarantine_id = stable_id("instrument", "takshashila")
+    reject_id = stable_id("instrument", "filler-01")
+    renewal_id = stable_id("instrument", "aryabhatta")
 
     # Quarantine
-    res_q = client.post(f"/api/instruments/{inst_id}/quarantine", headers=ao_headers)
+    res_q = client.post(f"/api/instruments/{quarantine_id}/quarantine", json={"reason": "Vigilance review"}, headers=ao_headers)
     assert res_q.status_code == 200
     q_data = InstrumentActionResponse.model_validate(res_q.json())
     assert q_data.is_quarantined is True
 
     # Reject
-    res_rej = client.post(f"/api/instruments/{inst_id}/reject", headers=ao_headers)
+    res_rej = client.post(f"/api/instruments/{reject_id}/reject", json={"reason": "Eligibility concern"}, headers=ao_headers)
     assert res_rej.status_code == 200
     rej_data = InstrumentActionResponse.model_validate(res_rej.json())
     assert rej_data.state == InstrumentState.REJECTED
 
     # Renew
     res_ren = client.post(
-        f"/api/instruments/{inst_id}/renew",
+        f"/api/instruments/{renewal_id}/renew",
         json={"new_maturity_date": "2029-10-24", "remarks": "Renewal approved"},
         headers=ar_headers,
     )

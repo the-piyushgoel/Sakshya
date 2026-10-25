@@ -11,7 +11,7 @@ from uuid import uuid4
 from app.core import audit, clock
 from app.core.db import SessionLocal
 from app.core.enums import DiscrepancyStatus, InstrumentState, ObligationState
-from app.core.errors import NotFoundError
+from app.core.errors import InvalidStateError, NotFoundError
 from app.core.models import User
 from app.modules.intake.models import (
     Discrepancy,
@@ -70,6 +70,37 @@ def get_instrument(instrument_id: str, db: Session | None = None) -> Instrument 
     should_close = db is None
     try:
         return session.query(Instrument).filter(Instrument.id == instrument_id).first()
+    finally:
+        if should_close:
+            session.close()
+
+
+def has_open_high(instrument_id: str, db: Session | None = None) -> bool:
+    """Return whether an instrument has an OPEN or ESCALATED HIGH discrepancy."""
+    session = db or SessionLocal()
+    should_close = db is None
+    try:
+        return session.query(Discrepancy.id).filter(
+            Discrepancy.instrument_id == instrument_id,
+            Discrepancy.severity == "HIGH",
+            Discrepancy.status.in_((DiscrepancyStatus.OPEN.value, DiscrepancyStatus.ESCALATED.value)),
+        ).first() is not None
+    finally:
+        if should_close:
+            session.close()
+
+
+def ensure_not_quarantined(instrument_id: str, db: Session | None = None) -> Instrument:
+    """Return an instrument, raising INVALID_STATE when it is quarantined."""
+    session = db or SessionLocal()
+    should_close = db is None
+    try:
+        instrument = session.query(Instrument).filter(Instrument.id == instrument_id).first()
+        if not instrument:
+            raise NotFoundError("Instrument", instrument_id)
+        if instrument.is_quarantined:
+            raise InvalidStateError("Instrument is quarantined")
+        return instrument
     finally:
         if should_close:
             session.close()

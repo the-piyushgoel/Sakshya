@@ -22,6 +22,7 @@ Endpoints from §3.5:
 import re
 from pathlib import Path
 
+from app.core import audit, notify
 from app.core.db import SessionLocal
 from app.core.deps import require_roles, require_step_up
 from app.core.enums import (
@@ -33,7 +34,7 @@ from app.core.enums import (
     Severity,
     TrustLevel,
 )
-from app.core.errors import NotFoundError, ValidationError
+from app.core.errors import InvalidStateError, NotFoundError, ValidationError
 from app.core.models import User
 from app.modules.bank.models import BankRequest
 from app.modules.intake import service
@@ -77,7 +78,7 @@ from app.modules.intake.schemas import (
 )
 from app.modules.intake.uploads import validate_pdf
 from doc_intel import analyze
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse
 
 router = APIRouter(tags=["intake"])
@@ -560,51 +561,132 @@ def list_discrepancies(
 def resolve_discrepancy(
     discrepancy_id: str,
     payload: DiscrepancyResolveRequest,
-    current_user: User = Depends(require_roles(*_SCRUTINY_ROLES)),
+    current_user: User = Depends(require_roles(Role.SCRUTINY_OFFICER, Role.APPROVING_OFFICER)),
 ):
     """Resolve a discrepancy: CLEAR, ESCALATE, or REJECT."""
-    # TODO PY-2b: replace stub
     valid_actions = {"CLEAR", "ESCALATE", "REJECT"}
     if payload.action not in valid_actions:
         raise ValidationError(
             f"Invalid action '{payload.action}'; must be one of {sorted(valid_actions)}",
             details={"allowed": sorted(valid_actions)},
         )
-    status_map = {"CLEAR": DiscrepancyStatus.CLEARED, "ESCALATE": DiscrepancyStatus.ESCALATED, "REJECT": DiscrepancyStatus.REJECTED}
-    return _MOCK_DISCREPANCY.model_copy(update={
-        "status": status_map[payload.action],
-        "resolved_at": _NOW,
-        "resolved_by": current_user.id,
-        "resolution_note": payload.note,
-    })
+    status_map = {
+        "CLEAR": DiscrepancyStatus.CLEARED,
+        "ESCALATE": DiscrepancyStatus.ESCALATED,
+        "REJECT": DiscrepancyStatus.REJECTED,
+    }
+    db = SessionLocal()
+    try:
+        discrepancy = db.query(Discrepancy).filter(Discrepancy.id == discrepancy_id).first()
+        if not discrepancy:
+            raise NotFoundError("Discrepancy", discrepancy_id)
+        if discrepancy.status not in (DiscrepancyStatus.OPEN.value, DiscrepancyStatus.ESCALATED.value):
+            raise InvalidStateError("Discrepancy has already been resolved")
+        if discrepancy.severity == Severity.HIGH.value and not payload.note.strip():
+            raise ValidationError("A resolution note is required for HIGH discrepancies")
+        instrument = db.query(Instrument).filter(Instrument.id == discrepancy.instrument_id).first()
+        if not instrument:
+            raise NotFoundError("Instrument", discrepancy.instrument_id)
+
+        discrepancy.status = status_map[payload.action].value
+        discrepancy.resolved_by = current_user.id
+        discrepancy.resolution_note = payload.note
+        if Role.SCRUTINY_OFFICER.value in current_user.roles and not instrument.scrutiny_officer_id:
+            instrument.scrutiny_officer_id = current_user.id
+        audit.log(
+            actor=current_user, action="DISCREPANCY_RESOLVED", entity_type="DISCREPANCY",
+            entity_id=discrepancy.id,
+            payload={"action": payload.action, "status": discrepancy.status, "note": payload.note},
+            db=db,
+        )
+        if instrument.state == InstrumentState.DISCREPANCY.value and not service.has_open_high(instrument.id, db):
+            service.transition(instrument.id, InstrumentState.SCRUTINY, current_user,
+                               "All HIGH discrepancies resolved", db)
+        db.commit()
+        db.refresh(discrepancy)
+        return DiscrepancyOut(
+            id=discrepancy.id, instrument_id=discrepancy.instrument_id, code=discrepancy.code,
+            severity=discrepancy.severity, status=discrepancy.status,
+            details=discrepancy.details_json, created_at=discrepancy.created_at.isoformat(),
+            resolved_by=discrepancy.resolved_by, resolution_note=discrepancy.resolution_note,
+        )
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 @router.post("/instruments/{instrument_id}/quarantine", response_model=InstrumentActionResponse)
 def quarantine_instrument(
     instrument_id: str,
-    current_user: User = Depends(require_roles(Role.APPROVING_OFFICER, Role.COMPLIANCE_OFFICER, Role.SYSTEM_ADMIN)),
+    reason: str = Body(..., embed=True),
+    current_user: User = Depends(require_roles(Role.APPROVING_OFFICER, Role.COMPLIANCE_OFFICER)),
 ):
     """Place instrument under quarantine for vigilance review."""
-    # TODO PY-2b: replace stub
-    if instrument_id not in _MOCK_INSTRUMENTS:
-        raise NotFoundError("Instrument", instrument_id)
-    return InstrumentActionResponse(
-        id=instrument_id, state=InstrumentState.SCRUTINY, is_quarantined=True, message="Instrument quarantined",
-    )
+    if not reason.strip():
+        raise ValidationError("A quarantine reason is required")
+    db = SessionLocal()
+    try:
+        instrument = db.query(Instrument).filter(Instrument.id == instrument_id).first()
+        if not instrument:
+            raise NotFoundError("Instrument", instrument_id)
+        if instrument.is_quarantined:
+            raise InvalidStateError("Instrument is already quarantined")
+        instrument.is_quarantined = True
+        audit.log(
+            actor=current_user, action="INSTRUMENT_QUARANTINED", entity_type="INSTRUMENT",
+            entity_id=instrument.id, payload={"reason": reason}, db=db,
+        )
+        notify.send(
+            title="QUARANTINE_VIGILANCE: instrument quarantined",
+            body=f"Instrument {instrument.id} was quarantined: {reason}",
+            role=Role.COMPLIANCE_OFFICER, level="ERROR",
+            link=f"/instruments/{instrument.id}", db=db,
+        )
+        db.commit()
+        return InstrumentActionResponse(
+            id=instrument.id, state=instrument.state, is_quarantined=True, message="Instrument quarantined",
+        )
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 @router.post("/instruments/{instrument_id}/reject", response_model=InstrumentActionResponse)
 def reject_instrument(
     instrument_id: str,
-    current_user: User = Depends(require_roles(Role.APPROVING_OFFICER, Role.SYSTEM_ADMIN)),
+    reason: str = Body(..., embed=True),
+    current_user: User = Depends(require_roles(Role.APPROVING_OFFICER)),
 ):
     """Reject an instrument after scrutiny failure."""
-    # TODO PY-2b: replace stub
-    if instrument_id not in _MOCK_INSTRUMENTS:
-        raise NotFoundError("Instrument", instrument_id)
-    return InstrumentActionResponse(
-        id=instrument_id, state=InstrumentState.REJECTED, is_quarantined=False, message="Instrument rejected",
-    )
+    if not reason.strip():
+        raise ValidationError("A rejection reason is required")
+    db = SessionLocal()
+    try:
+        instrument = db.query(Instrument).filter(Instrument.id == instrument_id).first()
+        if not instrument:
+            raise NotFoundError("Instrument", instrument_id)
+        rejectable_states = {
+            InstrumentState.SUBMITTED.value, InstrumentState.AUTO_CHECKING.value,
+            InstrumentState.SCRUTINY.value, InstrumentState.BANK_PENDING.value,
+            InstrumentState.DISCREPANCY.value, InstrumentState.CHANGES_REQUESTED.value,
+        }
+        if instrument.state not in rejectable_states:
+            raise InvalidStateError(f"Cannot reject instrument from {instrument.state} state")
+        service.transition(instrument.id, InstrumentState.REJECTED, current_user, reason, db)
+        db.commit()
+        return InstrumentActionResponse(
+            id=instrument.id, state=instrument.state, is_quarantined=instrument.is_quarantined,
+            message="Instrument rejected",
+        )
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 @router.post("/instruments/{instrument_id}/renew", response_model=InstrumentActionResponse)
