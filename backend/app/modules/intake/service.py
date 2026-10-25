@@ -4,11 +4,9 @@ Intake service implementation adhering to CONTRACT.md §3.6.
 Single source of truth for instrument state transitions, field trust extraction,
 and obligation coverage recomputations.
 """
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 from uuid import uuid4
-
-from sqlalchemy.orm import Session
 
 from app.core import audit, clock
 from app.core.db import SessionLocal
@@ -20,9 +18,9 @@ from app.modules.intake.models import (
     FieldTrust,
     Instrument,
     InstrumentStateHistory,
-    InstrumentVersion,
     Obligation,
 )
+from sqlalchemy.orm import Session
 
 
 def get_field_value(instrument: Instrument, field_name: str, db: Session | None = None) -> str | None:
@@ -243,7 +241,7 @@ def recompute_coverage(
             session.query(Instrument)
             .filter(
                 Instrument.obligation_id == obligation_id,
-                Instrument.is_quarantined == False,  # noqa: E712
+                Instrument.is_quarantined == False,
             )
             .all()
         )
