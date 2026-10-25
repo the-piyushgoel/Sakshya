@@ -44,6 +44,10 @@ class ReleaseRequest(Base):
         cascade="all, delete-orphan",
         order_by="EligibilityRuleResult.rule_id",
     )
+    letter: Mapped["ReleaseLetter | None"] = relationship(
+        back_populates="request",
+        uselist=False,
+    )
 
 
 class EligibilityRuleResult(Base):
@@ -75,4 +79,54 @@ class Hold(Base):
     lifted_by_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     lifted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     lift_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ReleaseLetter(Base):
+    """
+    Immutable release letter issued and digitally signed by Release Authority (§7.2).
+    Contains canonical payload, cryptographic signature, verification token, and PDF metadata.
+    """
+    __tablename__ = "release_letter"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_id)
+    release_request_id: Mapped[str] = mapped_column(
+        ForeignKey("release_request.id"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    obligation_id: Mapped[str] = mapped_column(
+        ForeignKey("obligation.id"),
+        nullable=False,
+        index=True,
+    )
+    institute_id: Mapped[str] = mapped_column(
+        ForeignKey("institute.id"),
+        nullable=False,
+        index=True,
+    )
+    bank_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    fdr_number: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    state: Mapped[str] = mapped_column(String(40), nullable=False, default="ISSUED", index=True)
+    verification_code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
+    letter_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    signature_hex: Mapped[str] = mapped_column(String(128), nullable=False)
+    signer_key_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    policy_snapshot_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    principal_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    aicte_share_paise: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    principal_to_trust_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    penalty_paise: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    interest_paise: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    destination_account_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    valid_until: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revoked_by_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    superseded_by_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    request: Mapped["ReleaseRequest"] = relationship("ReleaseRequest", back_populates="letter")
+
 

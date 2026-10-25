@@ -7,7 +7,7 @@ Implements:
 - Compliance hold management (place, lift, get_active_hold)
 - Instrument release locking via intake.service.transition
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -18,6 +18,7 @@ from app.core.enums import (
     CaseType,
     EligibilityVerdict,
     InstrumentState,
+    LetterState,
     ReleaseState,
     Role,
     RuleResult,
@@ -26,10 +27,14 @@ from app.core.enums import (
 from app.core.errors import ForbiddenError, InvalidStateError, NotFoundError, ValidationError
 from app.core.models import User
 from app.modules.bank import service as bank_service
+from app.modules.bank.models import Bank
 from app.modules.intake import service as intake_service
 from app.modules.intake.models import Discrepancy, Institute, Obligation, Trust
-from app.modules.release.models import EligibilityRuleResult, Hold, ReleaseRequest
+from app.modules.release.crypto import compute_canonical_hash, generate_verification_code, signer
+from app.modules.release.models import EligibilityRuleResult, Hold, ReleaseLetter, ReleaseRequest
+from app.modules.release.pdf import generate_release_letter_pdf
 from app.modules.release.schemas import HoldScope
+from app.modules.release.settlement import compute_settlement
 
 
 # ── Hold Management ───────────────────────────────────────────────────────────
@@ -967,3 +972,293 @@ def list_release_requests(
     total = query.count()
     items = query.order_by(ReleaseRequest.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     return items, total
+
+
+# ── Release Letter Operations (PR-7) ──────────────────────────────────────────
+
+def sign_release_request(
+    request_id: str,
+    actor: User,
+    db: Session,
+) -> ReleaseLetter:
+    """
+    Release Authority digitally signs an approved release request using Ed25519 (SRS §7.2).
+    Generates canonical RFC 8785 JSON payload, computes SHA-256 hash, signs with RA private key,
+    issues ReleaseLetter, and transitions request to APPROVED.
+    """
+    if Role.RELEASE_AUTHORITY.value not in actor.roles and Role.SYSTEM_ADMIN.value not in actor.roles:
+        raise ForbiddenError("Only Release Authority can sign release requests")
+
+    request = db.query(ReleaseRequest).filter(ReleaseRequest.id == request_id).first()
+    if not request:
+        raise NotFoundError(f"Release request '{request_id}' not found")
+
+    if request.state != ReleaseState.RECOMMENDED.value:
+        raise InvalidStateError(
+            f"Cannot sign release request from state '{request.state}'. Expected RECOMMENDED."
+        )
+
+    now = clock.now()
+    validity_days = policy.get("letter_validity_days", db) or 14
+    valid_until = now + timedelta(days=validity_days)
+
+    # Compute financial settlement breakdown
+    settlement = compute_settlement(request, db)
+
+    # Resolve primary bank & FDR number from instruments
+    bank_id = "BRB"
+    fdr_number = "FDR-UNKNOWN"
+    if request.instrument_ids_json:
+        first_ins = intake_service.get_instrument(request.instrument_ids_json[0], db)
+        if first_ins:
+            bank_id = first_ins.bank_id
+            fdr_num_val = intake_service.get_field_value(first_ins, "fdr_number", db)
+            if fdr_num_val:
+                fdr_number = fdr_num_val
+
+    # Resolve institute & trust names
+    inst = db.query(Institute).filter(Institute.id == request.institute_id).first()
+    institute_name = inst.name if inst else request.institute_id
+
+    obligation = intake_service.get_obligation(request.obligation_id, db)
+    trust_name = "Institute Sponsoring Trust"
+    if obligation and obligation.trust_id:
+        trust = db.query(Trust).filter(Trust.id == obligation.trust_id).first()
+        if trust and trust.name:
+            trust_name = trust.name
+
+    letter_id = str(uuid4())
+
+    # Generate unique Crockford Base32 verification code
+    verification_code = generate_verification_code()
+    while db.query(ReleaseLetter).filter(ReleaseLetter.verification_code == verification_code).first():
+        verification_code = generate_verification_code()
+
+    # Build canonical payload dictionary according to schema sakshya.letter.v1
+    canonical_payload = {
+        "schema": "sakshya.letter.v1",
+        "letter_id": letter_id,
+        "public_code": verification_code,
+        "issued_at": now.isoformat(),
+        "expires_at": valid_until.isoformat(),
+        "obligation_ref": request.obligation_id,
+        "institute": {
+            "id": request.institute_id,
+            "name": institute_name,
+        },
+        "trust": {
+            "name": trust_name,
+        },
+        "instruments": [
+            {
+                "instrument_id": s["instrument_id"],
+                "fdr_number": s["fdr_number"],
+                "fdr_masked": s["fdr_masked"],
+                "bank_ifsc": s["bank_ifsc"],
+                "principal_paise": s["principal_paise"],
+            }
+            for s in settlement["instrument_summaries"]
+        ],
+        "principal_to_trust": {
+            "amount_paise": settlement["principal_to_trust_paise"],
+            "beneficiary_name": trust_name,
+        },
+        "aicte_share": {
+            "amount_paise": settlement["aicte_share_paise"],
+            "account_ref": "policy:interest_destination",
+            "destination_account": settlement["destination_account"],
+        },
+        "conditions": [
+            "Single use authorization - bank must verify via Sakshya portal before execution",
+            "Valid strictly until the expiry timestamp indicated herein",
+            "AICTE share must be remitted exclusively to the designated AICTE bank account",
+        ],
+        "policy_version": 1,
+        "issuer": {
+            "role": "RELEASE_AUTHORITY",
+            "user_id": actor.id,
+            "signer_key_id": signer.key_id,
+        },
+    }
+
+    # RFC 8785 Canonical Serialization & SHA-256 Hashing
+    _, digest_hex = compute_canonical_hash(canonical_payload)
+
+    # Ed25519 Signing with RA key
+    signature_hex, signer_key_id = signer.sign_digest(digest_hex)
+
+    # Policy snapshot
+    policy_snapshot = {
+        "letter_validity_days": validity_days,
+        "interest_destination": settlement["destination_account"],
+        "penalty_rules": policy.get("penalty_rules", db),
+    }
+
+    # Persist immutable release letter
+    letter = ReleaseLetter(
+        id=letter_id,
+        release_request_id=request.id,
+        obligation_id=request.obligation_id,
+        institute_id=request.institute_id,
+        bank_id=bank_id,
+        fdr_number=fdr_number,
+        state=LetterState.ISSUED.value,
+        verification_code=verification_code,
+        letter_hash=digest_hex,
+        signature_hex=signature_hex,
+        signer_key_id=signer_key_id,
+        canonical_payload_json=canonical_payload,
+        policy_snapshot_json=policy_snapshot,
+        principal_paise=settlement["total_principal_paise"],
+        aicte_share_paise=settlement["aicte_share_paise"],
+        principal_to_trust_paise=settlement["principal_to_trust_paise"],
+        penalty_paise=settlement["penalty_paise"],
+        interest_paise=settlement["interest_paise"],
+        destination_account_json=settlement["destination_account"],
+        issued_at=now,
+        valid_until=valid_until,
+    )
+    db.add(letter)
+
+    # Transition request to APPROVED
+    request.state = ReleaseState.APPROVED.value
+    request.letter_id = letter.id
+    request.settlement_json = settlement
+    request.updated_at = now
+
+    # Cryptographic Audit Log
+    audit.log(
+        actor=actor,
+        action="RELEASE_LETTER_SIGNED",
+        entity_type="RELEASE_LETTER",
+        entity_id=letter.id,
+        payload={
+            "release_request_id": request.id,
+            "verification_code": letter.verification_code,
+            "letter_hash": letter.letter_hash,
+            "principal_paise": letter.principal_paise,
+            "aicte_share_paise": letter.aicte_share_paise,
+            "signer_key_id": signer_key_id,
+        },
+        db=db,
+    )
+
+    # Notification to Institute Signatory
+    notify.send(
+        title="Release letter issued & signed",
+        body=f"Release letter {letter.verification_code} has been digitally signed by AICTE Release Authority.",
+        role=Role.INS_SIGNATORY,
+        institute_id=request.institute_id,
+        level="HIGH",
+        link="/institute/release",
+        dedupe_key=f"release-letter:{letter.id}:issued",
+        db=db,
+    )
+
+    # Notification to Bank Maker
+    notify.send(
+        title="New release letter for settlement",
+        body=f"Release letter {letter.verification_code} issued for FDR {fdr_number}. Ready for execution.",
+        role=Role.BANK_MAKER,
+        bank_id=bank_id,
+        level="INFO",
+        link="/bank/letters",
+        dedupe_key=f"release-letter:{letter.id}:bank",
+        db=db,
+    )
+
+    db.commit()
+    db.refresh(letter)
+    return letter
+
+
+def get_release_letter(letter_id: str, actor: User, db: Session) -> ReleaseLetter:
+    """Fetch release letter with multi-tenant institute scoping."""
+    letter = db.query(ReleaseLetter).filter(ReleaseLetter.id == letter_id).first()
+    if not letter:
+        raise NotFoundError(f"Release letter '{letter_id}' not found")
+
+    is_institute_user = any(r in (Role.INS_SIGNATORY.value, Role.INS_ADMIN.value) for r in actor.roles)
+    if is_institute_user and actor.institute_id and letter.institute_id != actor.institute_id:
+        raise NotFoundError(f"Release letter '{letter_id}' not found")
+
+    return letter
+
+
+def get_release_letter_pdf(letter_id: str, actor: User, db: Session, base_url: str | None = None) -> bytes:
+    """Generate and return binary PDF for a release letter."""
+    letter = get_release_letter(letter_id, actor, db)
+
+    inst = db.query(Institute).filter(Institute.id == letter.institute_id).first()
+    institute_name = inst.name if inst else letter.institute_id
+
+    obligation = intake_service.get_obligation(letter.obligation_id, db)
+    trust_name = "Institute Sponsoring Trust"
+    if obligation and obligation.trust_id:
+        trust = db.query(Trust).filter(Trust.id == obligation.trust_id).first()
+        if trust and trust.name:
+            trust_name = trust.name
+
+    bank = db.query(Bank).filter(Bank.id == letter.bank_id).first()
+    bank_name = bank.name if bank else f"Bank {letter.bank_id}"
+
+    return generate_release_letter_pdf(
+        letter=letter,
+        institute_name=institute_name,
+        trust_name=trust_name,
+        bank_name=bank_name,
+        base_url=base_url,
+    )
+
+
+def revoke_release_letter(letter_id: str, reason: str, actor: User, db: Session) -> ReleaseLetter:
+    """Release Authority revokes an active release letter prior to execution."""
+    if Role.RELEASE_AUTHORITY.value not in actor.roles and Role.SYSTEM_ADMIN.value not in actor.roles:
+        raise ForbiddenError("Only Release Authority can revoke release letters")
+
+    if not reason or len(reason.strip()) < 3:
+        raise ValidationError("Revocation reason must be at least 3 characters")
+
+    letter = db.query(ReleaseLetter).filter(ReleaseLetter.id == letter_id).first()
+    if not letter:
+        raise NotFoundError(f"Release letter '{letter_id}' not found")
+
+    if letter.state != LetterState.ISSUED.value:
+        raise InvalidStateError(f"Cannot revoke letter from state '{letter.state}'. Expected ISSUED.")
+
+    now = clock.now()
+    letter.state = LetterState.REVOKED.value
+    letter.revoked_at = now
+    letter.revoke_reason = reason.strip()
+    letter.revoked_by_id = actor.id
+
+    # Update parent release request if present
+    req = db.query(ReleaseRequest).filter(ReleaseRequest.id == letter.release_request_id).first()
+    if req:
+        req.state = ReleaseState.REVOKED.value
+        req.updated_at = now
+
+    audit.log(
+        actor=actor,
+        action="RELEASE_LETTER_REVOKED",
+        entity_type="RELEASE_LETTER",
+        entity_id=letter.id,
+        payload={"reason": letter.revoke_reason, "revoked_by": actor.id},
+        db=db,
+    )
+
+    notify.send(
+        title="Release letter revoked",
+        body=f"Release letter {letter.verification_code} was revoked: {reason.strip()}",
+        role=Role.INS_SIGNATORY,
+        institute_id=letter.institute_id,
+        level="HIGH",
+        link="/institute/release",
+        dedupe_key=f"release-letter:{letter.id}:revoked",
+        db=db,
+    )
+
+    db.commit()
+    db.refresh(letter)
+    return letter
+

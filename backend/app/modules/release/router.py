@@ -38,11 +38,12 @@ from app.core.deps import get_current_user, require_roles, require_step_up
 from app.core.enums import CaseType, LetterState, ReleaseState, Role, RuleResult
 from app.core.errors import NotFoundError
 from app.core.models import AuditEvent, User
+from app.modules.bank.models import Bank
 from app.modules.intake import service as intake_service
 from app.modules.intake.ids import institute_id
 from app.modules.intake.models import Institute
 from app.modules.release import service as release_service
-from app.modules.release.models import EligibilityRuleResult, Hold, ReleaseRequest
+from app.modules.release.models import EligibilityRuleResult, Hold, ReleaseLetter, ReleaseRequest
 from app.modules.release.schemas import (
     BankExecuteCheckerRequest,
     BankExecuteMakerRequest,
@@ -269,6 +270,33 @@ def _hold_to_out(h: Hold) -> HoldOut:
         lifted_at=h.lifted_at.isoformat() if h.lifted_at else None,
         lift_reason=h.lift_reason,
     )
+
+
+def _letter_to_out(letter: ReleaseLetter, db: Session) -> ReleaseLetterOut:
+    inst = db.query(Institute).filter(Institute.id == letter.institute_id).first()
+    inst_name = inst.name if inst else letter.institute_id
+    bank = db.query(Bank).filter(Bank.id == letter.bank_id).first()
+    bank_name = bank.name if bank else f"Bank {letter.bank_id}"
+    return ReleaseLetterOut(
+        id=letter.id,
+        release_request_id=letter.release_request_id,
+        institute_id=letter.institute_id,
+        institute_name=inst_name,
+        bank_id=letter.bank_id,
+        bank_name=bank_name,
+        fdr_number=letter.fdr_number,
+        state=letter.state,
+        verification_code=letter.verification_code,
+        letter_hash=letter.letter_hash,
+        signature_hex=letter.signature_hex,
+        principal_paise=letter.principal_paise,
+        aicte_share_paise=letter.aicte_share_paise,
+        destination_account=letter.destination_account_json or {},
+        issued_date=letter.issued_at.isoformat() if letter.issued_at else "",
+        valid_until=letter.valid_until.isoformat() if letter.valid_until else "",
+        revoke_reason=letter.revoke_reason,
+    )
+
 
 
 # ── Release Requests Endpoints ─────────────────────────────────────────────────
@@ -528,7 +556,20 @@ def sign_release_request(
     db: Session = Depends(get_db),
 ):
     """Release Authority Ed25519 signs release request. Requires 6-digit step-up PIN verification."""
-    if id not in _MOCK_RELEASE_REQUESTS and not db.query(ReleaseRequest).filter(ReleaseRequest.id == id).first():
+    db_req = db.query(ReleaseRequest).filter(ReleaseRequest.id == id).first()
+    if db_req:
+        letter = release_service.sign_release_request(id, current_user, db)
+        return ReleaseSignResponse(
+            status="SIGNED",
+            request_id=id,
+            letter_id=letter.id,
+            verification_code=letter.verification_code,
+            letter_hash=letter.letter_hash,
+            signed_at=letter.issued_at.isoformat(),
+            pdf_url=f"/api/release/letters/{letter.id}/pdf",
+        )
+
+    if id not in _MOCK_RELEASE_REQUESTS:
         raise NotFoundError("Release request", id)
 
     now_iso = clock.now().isoformat()
@@ -549,8 +590,14 @@ def sign_release_request(
 def get_release_letter(
     id: str,
     current_user: User = Depends(require_roles(*_RELEASE_VIEW_ROLES)),
+    db: Session = Depends(get_db),
 ):
     """Get metadata for an issued release letter."""
+    db_letter = db.query(ReleaseLetter).filter(ReleaseLetter.id == id).first()
+    if db_letter:
+        letter = release_service.get_release_letter(id, current_user, db)
+        return _letter_to_out(letter, db)
+
     if id != _MOCK_LETTER.id:
         raise NotFoundError("Release letter", id)
     return _MOCK_LETTER
@@ -560,8 +607,18 @@ def get_release_letter(
 def get_release_letter_pdf(
     id: str,
     current_user: User = Depends(require_roles(*_RELEASE_VIEW_ROLES)),
+    db: Session = Depends(get_db),
 ):
     """Download binary PDF of signed release letter with QR and watermark."""
+    db_letter = db.query(ReleaseLetter).filter(ReleaseLetter.id == id).first()
+    if db_letter:
+        pdf_bytes = release_service.get_release_letter_pdf(id, current_user, db)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={id}.pdf"},
+        )
+
     if id != _MOCK_LETTER.id:
         raise NotFoundError("Release letter", id)
 
@@ -583,6 +640,11 @@ def revoke_release_letter(
     db: Session = Depends(get_db),
 ):
     """Release Authority revokes an active letter prior to execution."""
+    db_letter = db.query(ReleaseLetter).filter(ReleaseLetter.id == id).first()
+    if db_letter:
+        revoked = release_service.revoke_release_letter(id, payload.reason, current_user, db)
+        return _letter_to_out(revoked, db)
+
     if id != _MOCK_LETTER.id:
         raise NotFoundError("Release letter", id)
 
@@ -598,6 +660,7 @@ def revoke_release_letter(
         db=db,
     )
     return _MOCK_LETTER
+
 
 
 # ── Compliance Holds Endpoints ─────────────────────────────────────────────────
