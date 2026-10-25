@@ -15,6 +15,9 @@ from sample_constants import (
     ISSUE_DATE,
     MATURITY_DATE,
     PRINCIPAL_RUPEES,
+    RENEWAL_FDR_NUMBER,
+    RENEWAL_ISSUE_DATE,
+    RENEWAL_MATURITY_DATE,
     SEED_VJ_FDR_NUMBER,
 )
 
@@ -23,6 +26,7 @@ SAMPLES = {
     "fdr_tampered_amount.pdf": ("BRB-FDR-2024-000102", PRINCIPAL_RUPEES, "2600000.00", ALLOWED_FAVOURING),
     "fdr_wrong_favouring.pdf": ("BRB-FDR-2024-000103", PRINCIPAL_RUPEES, PRINCIPAL_RUPEES, "Secretary, Example Board"),
     "fdr_duplicate_vidyajyoti.pdf": (SEED_VJ_FDR_NUMBER, PRINCIPAL_RUPEES, PRINCIPAL_RUPEES, ALLOWED_FAVOURING),
+    "fdr_renewal_aryabhatta.pdf": (RENEWAL_FDR_NUMBER, PRINCIPAL_RUPEES, PRINCIPAL_RUPEES, ALLOWED_FAVOURING),
 }
 
 
@@ -35,18 +39,27 @@ def generate_samples(output_dir=None):
     out = Path(output_dir) if output_dir else Path(__file__).parent / "out"
     out.mkdir(parents=True, exist_ok=True)
     for filename, (number, qr_amount, printed_amount, favouring) in SAMPLES.items():
-        payload = json.dumps(_payload(number, qr_amount, favouring), separators=(",", ":"), sort_keys=True)
+        issue_date = RENEWAL_ISSUE_DATE if filename == "fdr_renewal_aryabhatta.pdf" else ISSUE_DATE
+        maturity_date = RENEWAL_MATURITY_DATE if filename == "fdr_renewal_aryabhatta.pdf" else MATURITY_DATE
+        payload_data = _payload(number, qr_amount, favouring)
+        payload_data["issue"] = issue_date
+        payload_data["maturity"] = maturity_date
+        payload = json.dumps(payload_data, separators=(",", ":"), sort_keys=True)
         qr = qrcode.QRCode(box_size=1, border=4)
         qr.add_data(payload)
         qr.make(fit=True)
         qr_matrix = qr.get_matrix()
         path = out / filename
+        # Preserve the checked-in golden PDFs. Passing an empty output directory
+        # still regenerates every fixture with the existing deterministic path.
+        if filename != "fdr_renewal_aryabhatta.pdf" and path.exists():
+            continue
         pdf = canvas.Canvas(str(path), pagesize=A4, invariant=1)
         pdf.setTitle("Fixed Deposit Receipt")
         pdf.setAuthor("Example Bank")
         pdf.setFont("Helvetica", 12)
         rows = [f"FDR Number: {number}", f"IFSC: {BANK_IFSC}", f"Principal: INR {printed_amount}",
-                f"Issue Date: {ISSUE_DATE}", f"Maturity Date: {MATURITY_DATE}",
+                f"Issue Date: {issue_date}", f"Maturity Date: {maturity_date}",
                 f"Interest Rate: {INTEREST_RATE}%", f"Favouring: {favouring}", f"Holder Names: {HOLDERS}"]
         for index, row in enumerate(rows):
             pdf.drawString(55, 780 - index * 28, row)
@@ -65,6 +78,8 @@ def generate_samples(output_dir=None):
 def _make_incremental(out):
     src = out / "fdr_genuine_aryabhatta.pdf"
     dst = out / "fdr_edited_incremental.pdf"
+    if dst.exists():
+        return
     dst.write_bytes(src.read_bytes())
     doc = pymupdf.open(dst)
     meta = doc.metadata
