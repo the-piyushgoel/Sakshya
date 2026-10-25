@@ -19,12 +19,12 @@ Endpoints from §3.5:
   POST /instruments/{id}/renew
   POST /instruments/{id}/activate
 """
+import re
 from pathlib import Path
 
 from app.core.db import SessionLocal
 from app.core.deps import require_roles, require_step_up
 from app.core.enums import (
-    BankRequestState,
     DiscrepancyStatus,
     DocCheckOutcome,
     InstrumentState,
@@ -35,7 +35,24 @@ from app.core.enums import (
 )
 from app.core.errors import NotFoundError, ValidationError
 from app.core.models import User
+from app.modules.bank.models import BankRequest
+from app.modules.intake import service
 from app.modules.intake.ids import bank_id, institute_id, stable_id
+from app.modules.intake.models import (
+    Discrepancy,
+    Document,
+    FieldTrust,
+    Institute,
+    Instrument,
+    InstrumentStateHistory,
+    Obligation,
+)
+from app.modules.intake.models import (
+    DocCheck as DocCheckModel,
+)
+from app.modules.intake.models import (
+    InstrumentVersion as InstrumentVersionModel,
+)
 from app.modules.intake.pipeline import submit_instrument
 from app.modules.intake.schemas import (
     BankRequestSummary,
@@ -77,6 +94,8 @@ _INTAKE_VIEW_ROLES = [
     Role.AUDITOR,
     Role.SYSTEM_ADMIN,
 ]
+
+_INTAKE_READ_ROLES = [*_INTAKE_VIEW_ROLES, Role.RELEASE_AUTHORITY, Role.FINANCE_OFFICER]
 
 _INTAKE_WRITE_ROLES = [
     Role.INS_SIGNATORY,
@@ -227,45 +246,124 @@ _TAMPERED_PREVIEW = DocumentPreviewResponse(
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
+def _is_institute_user(user: User) -> bool:
+    return any(role in user.roles for role in (Role.INS_SIGNATORY.value, Role.INS_ADMIN.value))
+
+
+def _obligation_out(db, obligation: Obligation) -> ObligationOut:
+    instruments = db.query(Instrument).filter(Instrument.obligation_id == obligation.id).all()
+    covered = 0
+    for instrument in instruments:
+        if not instrument.is_quarantined and instrument.state in {
+            InstrumentState.ACTIVE.value, InstrumentState.RENEWAL_DUE.value,
+        }:
+            principal = service.get_field_value(instrument, "principal_paise", db)
+            try:
+                covered += int(principal or 0)
+            except ValueError:
+                continue
+    return ObligationOut(
+        id=obligation.id, institute_id=obligation.institute_id, trust_id=obligation.trust_id or "",
+        programme=obligation.programme, required_paise=obligation.required_paise,
+        term_years=obligation.term_years, start_date=obligation.start_date.isoformat(),
+        end_date=obligation.end_date.isoformat(), state=obligation.state,
+        covered_paise=covered, instruments_count=len(instruments),
+    )
+
+
+def _instrument_out(db, instrument: Instrument) -> InstrumentOut:
+    return InstrumentOut(
+        id=instrument.id, obligation_id=instrument.obligation_id,
+        institute_id=instrument.institute_id, bank_id=instrument.bank_id,
+        state=instrument.state, is_quarantined=instrument.is_quarantined,
+        fdr_number=service.get_field_value(instrument, "fdr_number", db),
+        principal_paise=_int_or_none(service.get_field_value(instrument, "principal_paise", db)),
+        maturity_date=service.get_field_value(instrument, "maturity_date", db),
+        created_at=instrument.created_at.isoformat(),
+    )
+
+
+def _int_or_none(value: str | None) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _scoped_instrument(db, instrument_id: str, user: User) -> Instrument:
+    instrument = db.query(Instrument).filter(Instrument.id == instrument_id).first()
+    if not instrument or _is_institute_user(user) and instrument.institute_id != user.institute_id:
+        raise NotFoundError("Instrument", instrument_id)
+    return instrument
+
+
+def _redact_names(value, names: list[str]):
+    if isinstance(value, dict):
+        return {key: _redact_names(item, names) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_names(item, names) for item in value]
+    if isinstance(value, str):
+        for name in names:
+            if name and name.casefold() in value.casefold():
+                value = re.sub(re.escape(name), "[redacted]", value, flags=re.IGNORECASE)
+        return value
+    return value
+
+
 @router.get("/institutes/me", response_model=InstituteOut)
 def get_my_institute(
     current_user: User = Depends(require_roles(Role.INS_SIGNATORY, Role.INS_ADMIN, Role.SYSTEM_ADMIN)),
 ):
     """Return the institute profile for the current user."""
-    # TODO PY-2b: replace stub
-    return InstituteOut(
-        id=current_user.institute_id or institute_id("aryabhatta"),
-        name="Aryabhatta College of Engineering",
-        code="ARYABHATTA",
-        city="New Delhi",
-    )
+    if not current_user.institute_id:
+        raise NotFoundError("Institute", "current user has no institute")
+    db = SessionLocal()
+    try:
+        institute = service.get_institute(current_user.institute_id, db)
+        if not institute:
+            raise NotFoundError("Institute", current_user.institute_id)
+        return InstituteOut(id=institute.id, name=institute.name, code=institute.code,
+                            city=institute.city or "")
+    finally:
+        db.close()
 
 
 @router.get("/obligations", response_model=ObligationListResponse)
 def list_obligations(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    current_user: User = Depends(require_roles(*_INTAKE_VIEW_ROLES)),
+    current_user: User = Depends(require_roles(*_INTAKE_READ_ROLES)),
 ):
     """List FDR obligations for the user's institute (or all for officers)."""
-    # TODO PY-2b: replace stub
-    items = _MOCK_OBLIGATIONS
-    if current_user.institute_id:
-        items = [o for o in items if o.institute_id == current_user.institute_id]
-    return ObligationListResponse(items=items, total=len(items))
+    scoped_id = current_user.institute_id if any(
+        role in current_user.roles for role in (Role.INS_SIGNATORY.value, Role.INS_ADMIN.value)
+    ) else None
+    db = SessionLocal()
+    try:
+        obligations = service.list_obligations(db, scoped_id)
+        total = len(obligations)
+        page_items = obligations[(page - 1) * page_size:page * page_size]
+        return ObligationListResponse(items=[_obligation_out(db, item) for item in page_items], total=total)
+    finally:
+        db.close()
 
 
-@router.get("/obligations/{obligation_id}", response_model=ObligationOut)
+@router.get("/obligations/{obligation_id}")
 def get_obligation(
     obligation_id: str,
-    current_user: User = Depends(require_roles(*_INTAKE_VIEW_ROLES)),
+    current_user: User = Depends(require_roles(*_INTAKE_READ_ROLES)),
 ):
     """Get a single obligation by ID."""
-    # TODO PY-2b: replace stub
-    for ob in _MOCK_OBLIGATIONS:
-        if ob.id == obligation_id:
-            return ob
-    raise NotFoundError("Obligation", obligation_id)
+    db = SessionLocal()
+    try:
+        obligation = service.get_obligation(obligation_id, db)
+        if not obligation or _is_institute_user(current_user) and obligation.institute_id != current_user.institute_id:
+            raise NotFoundError("Obligation", obligation_id)
+        result = _obligation_out(db, obligation).model_dump()
+        result["institute_name"] = obligation.institute.name
+        return result
+    finally:
+        db.close()
 
 
 @router.post("/documents/preview", response_model=DocumentPreviewResponse)
@@ -345,88 +443,106 @@ def create_instrument(
 @router.get("/instruments", response_model=InstrumentListResponse)
 def list_instruments(
     state: InstrumentState | None = None,
+    obligation_id: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    current_user: User = Depends(require_roles(*_INTAKE_VIEW_ROLES)),
+    current_user: User = Depends(require_roles(*_INTAKE_READ_ROLES)),
 ):
     """List instruments, optionally filtered by state."""
-    # TODO PY-2b: replace stub
-    items = list(_MOCK_INSTRUMENTS.values())
-    if current_user.institute_id:
-        items = [i for i in items if i.institute_id == current_user.institute_id]
-    if state is not None:
-        items = [i for i in items if i.state == state]
-    return InstrumentListResponse(items=items, total=len(items))
+    db = SessionLocal()
+    try:
+        rows = service.list_instruments(
+            db, current_user.institute_id if _is_institute_user(current_user) else None,
+            state.value if state else None, obligation_id,
+        )
+        total = len(rows)
+        rows = rows[(page - 1) * page_size:page * page_size]
+        return InstrumentListResponse(items=[_instrument_out(db, row) for row in rows], total=total)
+    finally:
+        db.close()
 
 
 @router.get("/instruments/{instrument_id}", response_model=InstrumentDetail)
 def get_instrument(
     instrument_id: str,
-    current_user: User = Depends(require_roles(*_INTAKE_VIEW_ROLES)),
+    current_user: User = Depends(require_roles(*_INTAKE_READ_ROLES)),
 ):
     """Retrieve full instrument workspace with trust-annotated fields."""
-    # TODO PY-2b: replace stub
-    inst = _MOCK_INSTRUMENTS.get(instrument_id)
-    if not inst:
-        raise NotFoundError("Instrument", instrument_id)
-    is_takshashila = inst.id == _MOCK_INST_TAKSHASHILA.id
-    fields = _TAKSHASHILA_FIELDS if is_takshashila else _ARYABHATTA_FIELDS
-    return InstrumentDetail(
-        id=inst.id,
-        obligation_id=inst.obligation_id,
-        institute_id=inst.institute_id,
-        bank_id=inst.bank_id,
-        state=inst.state,
-        is_quarantined=inst.is_quarantined,
-        fields=fields,
-        versions=[InstrumentVersion(version_no=1, fields_json={f.name: f.value for f in fields}, created_at=_NOW)],
-        documents=[{"id": "doc-arya-scan-001", "filename": "fdr_genuine_aryabhatta.pdf", "uploaded_at": _NOW}],
-        doc_checks=[
-            DocCheck(name="tamper_detection", outcome=DocCheckOutcome.PASS, confidence=0.97, details="Clean"),
-            DocCheck(name="metadata_intact", outcome=DocCheckOutcome.PASS, confidence=0.98, details="OK"),
-        ],
-        discrepancies=[] if is_takshashila else [_MOCK_DISCREPANCY],
-        bank_requests=[
-            BankRequestSummary(id="breq-tak-001", state=BankRequestState.CONFIRMED, outcome="ALL_CLEAR", created_at=_NOW)
-        ] if is_takshashila else [],
-        obligation=ObligationSummary(
-            id=inst.obligation_id,
-            programme="AICTE FDR obligation",
-            required_paise=450000000,
-            state=ObligationState.COVERED if is_takshashila else ObligationState.PENDING_DEPOSIT,
-        ),
-        created_at=_NOW,
-    )
+    db = SessionLocal()
+    try:
+        inst = _scoped_instrument(db, instrument_id, current_user)
+        obligation = db.query(Obligation).filter(Obligation.id == inst.obligation_id).first()
+        fields = db.query(FieldTrust).filter(FieldTrust.instrument_id == inst.id).order_by(FieldTrust.field_name).all()
+        versions = db.query(InstrumentVersionModel).filter(
+            InstrumentVersionModel.instrument_id == inst.id,
+        ).order_by(InstrumentVersionModel.version_no).all()
+        documents = db.query(Document).filter(Document.instrument_id == inst.id).order_by(Document.uploaded_at).all()
+        document_ids = [doc.id for doc in documents]
+        checks = db.query(DocCheckModel).filter(DocCheckModel.document_id.in_(document_ids)).order_by(DocCheckModel.id).all() if document_ids else []
+        discrepancies = db.query(Discrepancy).filter(Discrepancy.instrument_id == inst.id).order_by(Discrepancy.created_at).all()
+        bank_requests = db.query(BankRequest).filter(BankRequest.instrument_id == inst.id).order_by(BankRequest.created_at).all()
+        disc_details = [d.details_json for d in discrepancies]
+        if _is_institute_user(current_user):
+            other_names = [name for (name,) in db.query(Institute.name).filter(Institute.id != inst.institute_id).all()]
+            disc_details = [_redact_names(value, other_names) for value in disc_details]
+        return InstrumentDetail(
+            id=inst.id, obligation_id=inst.obligation_id, institute_id=inst.institute_id,
+            bank_id=inst.bank_id, state=inst.state, is_quarantined=inst.is_quarantined,
+            fields=[InstrumentField(name=f.field_name, value=f.value or "", trust=f.trust,
+                                    source=f.source or "", evidence_ref=f.evidence_ref,
+                                    set_at=f.set_at.isoformat()) for f in fields],
+            versions=[InstrumentVersion(version_no=v.version_no, fields_json=v.fields_json,
+                                        document_id=v.document_id, created_at=v.created_at.isoformat()) for v in versions],
+            documents=[{"id": doc.id, "filename": doc.filename, "uploaded_at": doc.uploaded_at.isoformat(),
+                        "sha256": doc.sha256} for doc in documents],
+            doc_checks=[DocCheck(name=c.name, outcome=c.outcome, confidence=c.confidence, details=c.details) for c in checks],
+            discrepancies=[DiscrepancyOut(id=d.id, instrument_id=d.instrument_id, code=d.code,
+                severity=d.severity, status=d.status, details=details, created_at=d.created_at.isoformat(),
+                resolved_by=d.resolved_by, resolution_note=d.resolution_note) for d, details in zip(discrepancies, disc_details)],
+            bank_requests=[BankRequestSummary(id=r.id, state=r.state, outcome=r.outcome,
+                created_at=r.created_at.isoformat()) for r in bank_requests],
+            obligation=ObligationSummary(id=obligation.id, programme=obligation.programme,
+                required_paise=obligation.required_paise, state=obligation.state) if obligation else None,
+            created_at=inst.created_at.isoformat(),
+        )
+    finally:
+        db.close()
 
 
 @router.get("/instruments/{instrument_id}/timeline", response_model=list[TimelineEvent])
 def get_instrument_timeline(
     instrument_id: str,
-    current_user: User = Depends(require_roles(*_INTAKE_VIEW_ROLES)),
+    current_user: User = Depends(require_roles(*_INTAKE_READ_ROLES)),
 ):
     """Return state-transition timeline for an instrument."""
-    # TODO PY-2b: replace stub
-    if instrument_id not in _MOCK_INSTRUMENTS:
-        raise NotFoundError("Instrument", instrument_id)
-    return [
-        TimelineEvent(from_state=None, to_state="SUBMITTED", actor_id="ar_sig", reason="Initial upload", at=_NOW),
-        TimelineEvent(from_state="SUBMITTED", to_state="AUTO_CHECKING", actor_id="system", reason="Pipeline triggered", at=_NOW),
-    ]
+    db = SessionLocal()
+    try:
+        _scoped_instrument(db, instrument_id, current_user)
+        rows = db.query(InstrumentStateHistory).filter(
+            InstrumentStateHistory.instrument_id == instrument_id,
+        ).order_by(InstrumentStateHistory.at, InstrumentStateHistory.id).all()
+        return [TimelineEvent(from_state=row.from_state, to_state=row.to_state,
+                              actor_id=row.actor_id or "", reason=row.reason,
+                              at=row.at.isoformat()) for row in rows]
+    finally:
+        db.close()
 
 
 @router.get("/instruments/{instrument_id}/document")
 def get_instrument_document(
     instrument_id: str,
-    current_user: User = Depends(require_roles(*_INTAKE_VIEW_ROLES)),
+    current_user: User = Depends(require_roles(*_INTAKE_READ_ROLES)),
 ):
     """Download the scanned FDR PDF for an instrument."""
-    # TODO PY-2b: replace stub
-    if instrument_id not in _MOCK_INSTRUMENTS:
-        raise NotFoundError("Instrument", instrument_id)
-    pdf_path = Path(__file__).resolve().parents[4] / "samples" / "out" / "fdr_genuine_aryabhatta.pdf"
-    if not pdf_path.exists():
-        raise NotFoundError("Document", "file missing")
-    return FileResponse(pdf_path, media_type="application/pdf", filename="fdr_genuine_aryabhatta.pdf")
+    db = SessionLocal()
+    try:
+        _scoped_instrument(db, instrument_id, current_user)
+        document = db.query(Document).filter(Document.instrument_id == instrument_id).order_by(Document.uploaded_at).first()
+        if not document or not Path(document.path).is_file():
+            raise NotFoundError("Document", instrument_id)
+        return FileResponse(document.path, media_type="application/pdf", filename=document.filename)
+    finally:
+        db.close()
 
 
 @router.get("/discrepancies", response_model=DiscrepancyListResponse)
