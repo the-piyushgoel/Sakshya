@@ -423,6 +423,57 @@ def recompute_coverage(
             session.close()
 
 
+def recompute_confirmed_coverage(obligation_id: str, db: Session | None = None) -> Obligation:
+    """Recompute coverage using only active instruments with bank-confirmed principal."""
+    session = db or SessionLocal()
+    should_close = db is None
+    try:
+        obligation = session.query(Obligation).filter(Obligation.id == obligation_id).first()
+        if not obligation:
+            raise NotFoundError(f"Obligation '{obligation_id}' not found")
+        instruments = session.query(Instrument).filter(
+            Instrument.obligation_id == obligation_id,
+            Instrument.is_quarantined.is_(False),
+            Instrument.state.in_((InstrumentState.ACTIVE.value, InstrumentState.RENEWAL_DUE.value)),
+        ).all()
+        covered = 0
+        for instrument in instruments:
+            principal = session.query(FieldTrust).filter(
+                FieldTrust.instrument_id == instrument.id,
+                FieldTrust.field_name == "principal_paise",
+                FieldTrust.trust == "L2_BANK_CONFIRMED",
+            ).first()
+            try:
+                covered += int(principal.value) if principal and principal.value else 0
+            except (TypeError, ValueError):
+                continue
+        if obligation.end_date <= clock.now().date():
+            new_state = (ObligationState.TERM_COMPLETE.value if covered >= obligation.required_paise
+                         else ObligationState.PARTIALLY_COVERED.value if covered else ObligationState.PENDING_DEPOSIT.value)
+        else:
+            new_state = (ObligationState.COVERED.value if covered >= obligation.required_paise
+                         else ObligationState.PARTIALLY_COVERED.value if covered else ObligationState.PENDING_DEPOSIT.value)
+        if obligation.state != new_state:
+            old_state = obligation.state
+            obligation.state = new_state
+            audit.log(
+                actor="SYSTEM", action="OBLIGATION_COVERAGE_CHANGED", entity_type="OBLIGATION",
+                entity_id=obligation_id,
+                payload={"from_state": old_state, "to_state": new_state,
+                         "required_paise": obligation.required_paise, "covered_paise": covered},
+                db=session,
+            )
+        if should_close:
+            session.commit()
+            session.refresh(obligation)
+        else:
+            session.flush()
+        return obligation
+    finally:
+        if should_close:
+            session.close()
+
+
 def set_obligation_state(
     obligation_id: str,
     state: ObligationState | str,

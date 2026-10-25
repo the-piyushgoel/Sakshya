@@ -22,7 +22,7 @@ Endpoints from §3.5:
 import re
 from pathlib import Path
 
-from app.core import audit, notify
+from app.core import audit, notify, sod
 from app.core.db import SessionLocal
 from app.core.deps import require_roles, require_step_up
 from app.core.enums import (
@@ -34,7 +34,12 @@ from app.core.enums import (
     Severity,
     TrustLevel,
 )
-from app.core.errors import InvalidStateError, NotFoundError, ValidationError
+from app.core.errors import (
+    InvalidStateError,
+    NotFoundError,
+    SakshyaError,
+    ValidationError,
+)
 from app.core.models import User
 from app.modules.bank.models import BankRequest
 from app.modules.intake import service
@@ -706,16 +711,58 @@ def renew_instrument(
     )
 
 
-@router.post("/instruments/{instrument_id}/activate", response_model=InstrumentActionResponse)
+@router.post("/instruments/{instrument_id}/activate", response_model=InstrumentDetail)
 def activate_instrument(
     instrument_id: str,
-    current_user: User = Depends(require_roles(Role.APPROVING_OFFICER, Role.SYSTEM_ADMIN)),
+    current_user: User = Depends(require_roles(Role.APPROVING_OFFICER)),
     stepped_up: User = Depends(require_step_up),
 ):
-    """Activate instrument after successful scrutiny (requires step-up)."""
-    # TODO PY-2b: replace stub
-    if instrument_id not in _MOCK_INSTRUMENTS:
-        raise NotFoundError("Instrument", instrument_id)
-    return InstrumentActionResponse(
-        id=instrument_id, state=InstrumentState.ACTIVE, is_quarantined=False, message="Instrument activated",
-    )
+    """Activate an L2-confirmed instrument after scrutiny and maker-checker guards."""
+    db = SessionLocal()
+    try:
+        instrument = service.get_instrument(instrument_id, db)
+        if not instrument:
+            raise NotFoundError("Instrument", instrument_id)
+        instrument = service.ensure_not_quarantined(instrument_id, db)
+        if instrument.state != InstrumentState.SCRUTINY.value:
+            raise InvalidStateError("Only an instrument in SCRUTINY can be activated")
+
+        fields = service.get_fields(instrument_id, db)
+        required_l2 = ("principal_paise", "maturity_date", "favouring", "lien_marked")
+        missing = [name for name in required_l2 if fields.get(name, {}).get("trust") != TrustLevel.L2_BANK_CONFIRMED.value]
+        if fields.get("lien_marked", {}).get("value", "").casefold() != "true":
+            missing.append("lien_marked=true")
+        if missing:
+            raise SakshyaError("INVALID_STATE", "Required bank-confirmed fields are missing", 409,
+                               details={"missing_fields": missing})
+
+        if service.has_open_high(instrument_id, db):
+            high_rows = db.query(Discrepancy.code).filter(
+                Discrepancy.instrument_id == instrument_id,
+                Discrepancy.severity == Severity.HIGH.value,
+                Discrepancy.status.in_((DiscrepancyStatus.OPEN.value, DiscrepancyStatus.ESCALATED.value)),
+            ).distinct().all()
+            raise SakshyaError("INVALID_STATE", "Open HIGH discrepancies block activation", 409,
+                               details={"discrepancy_codes": sorted(code for (code,) in high_rows)})
+
+        sod.ensure_different(current_user, instrument.scrutiny_officer_id,
+                             "Approving officer cannot activate an instrument they scrutinised")
+        service.transition(instrument_id, InstrumentState.ACTIVE, current_user, "Approving officer activated instrument", db)
+        service.recompute_coverage(instrument.obligation_id, db)
+        obligation = service.recompute_confirmed_coverage(instrument.obligation_id, db)
+        notify.send(
+            title="FDR instrument activated", body=f"Instrument {instrument_id} is now ACTIVE.",
+            role=Role.INS_SIGNATORY, institute_id=instrument.institute_id,
+            level="INFO", link=f"/instruments/{instrument_id}",
+            dedupe_key=f"instrument:{instrument_id}:activated", db=db,
+        )
+        audit.log(actor=current_user, action="INSTRUMENT_ACTIVATED", entity_type="INSTRUMENT",
+                  entity_id=instrument_id,
+                  payload={"obligation_id": obligation.id, "coverage_state": obligation.state}, db=db)
+        db.commit()
+        return get_instrument(instrument_id, current_user)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()

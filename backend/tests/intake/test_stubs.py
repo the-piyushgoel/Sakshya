@@ -309,7 +309,7 @@ def test_quarantine_reject_renew_actions():
 
 
 def test_activate_step_up_guard():
-    """Verify activate requires 6-digit step-up PIN verification."""
+    """Verify activate requires step-up and no longer accepts mock instruments."""
     ao_headers = auth_header("ao1")
     inst_id = stable_id("instrument", "aryabhatta")
 
@@ -322,8 +322,7 @@ def test_activate_step_up_guard():
     res_pin = client.post("/api/auth/step-up", json={"pin": "246810"}, headers=ao_headers)
     assert res_pin.status_code == 200
 
-    # Activate again -> 200 OK
+    # The seeded Aryabhatta ID has no real instrument; after step-up it is 404.
     res_act = client.post(f"/api/instruments/{inst_id}/activate", headers=ao_headers)
-    assert res_act.status_code == 200
-    act_data = InstrumentActionResponse.model_validate(res_act.json())
-    assert act_data.state == InstrumentState.ACTIVE
+    assert res_act.status_code == 404
+    assert res_act.json()["error"]["code"] == "NOT_FOUND"
