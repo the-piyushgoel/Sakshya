@@ -7,7 +7,7 @@ from app.core.db import create_tables, drop_tables
 from app.core.enums import BankOutcome, BankRequestState
 from app.core.seed import seed as seed_core
 from app.main import app
-from app.modules.bank.ids import bank_id, stable_id
+from app.modules.bank.ids import stable_id
 from app.modules.bank.schemas import (
     BankInboxResponse,
     BankListResponse,
@@ -18,6 +18,9 @@ from app.modules.bank.schemas import (
     ChecklistItem,
     NodalContactListResponse,
 )
+from app.modules.bank.seed import seed as seed_bank
+from app.modules.intake.seed import seed as seed_intake
+from app.modules.monitoring.seed import seed as seed_monitoring
 from fastapi.testclient import TestClient
 
 client = TestClient(app)
@@ -27,6 +30,9 @@ client = TestClient(app)
 def setup_bank_db():
     create_tables()
     seed_core()
+    seed_intake()
+    seed_bank()
+    seed_monitoring()
     yield
     drop_tables()
     clock.reset()
@@ -100,7 +106,7 @@ def test_forbidden_roles_return_403():
     assert res_inbox.json()["error"]["code"] == "FORBIDDEN"
 
     ck_headers = auth_header("brb_ck")
-    req_id = stable_id("bank-request", "tak-brb-001")
+    req_id = stable_id("bank-request", "filler-02")
     res_maker = client.post(
         f"/api/bank/requests/{req_id}/maker-submit",
         json={"checklist": [], "outcome": "ALL_CLEAR"},
@@ -146,15 +152,14 @@ def test_create_list_and_get_bank_requests():
     res_create = client.post(
         "/api/bank-requests",
         json={
-            "instrument_id": stable_id("instrument", "aryabhatta"),
-            "bank_id": bank_id("BRB"),
-            "remarks": "Please verify 12-point checklist",
+            "instrument_id": stable_id("instrument", "filler-01"),
+            "reason": "Please verify 12-point checklist",
         },
         headers=so_headers,
     )
     assert res_create.status_code == 200
     created = BankRequestOut.model_validate(res_create.json())
-    assert created.state == BankRequestState.CREATED
+    assert created.state == BankRequestState.NOTIFIED
 
     # List bank requests
     res_list = client.get("/api/bank-requests", headers=so_headers)
@@ -191,8 +196,7 @@ def test_maker_submit_and_checker_decision():
     """Verify bank maker submit with 12 checklist items and checker authorisation."""
     mk_headers = auth_header("brb_mk")
     ck_headers = auth_header("brb_ck")
-    req_id = stable_id("bank-request", "tak-brb-001")
-
+    req_id = stable_id("bank-request", "filler-02")
     checklist = [
         ChecklistItem(item_no=i, question=f"Check item {i}", answer=True, remarks="OK")
         for i in range(1, 13)
@@ -227,7 +231,7 @@ def test_maker_submit_and_checker_decision():
 def test_checker_decision_invalid_returns_validation_error():
     """Verify checker decision with invalid action returns 422 VALIDATION_ERROR."""
     ck_headers = auth_header("brb_ck")
-    req_id = stable_id("bank-request", "tak-brb-001")
+    req_id = stable_id("bank-request", "filler-02")
     res = client.post(
         f"/api/bank/requests/{req_id}/checker-decision",
         json={"decision": "REJECT_INVALID", "remarks": "Invalid"},

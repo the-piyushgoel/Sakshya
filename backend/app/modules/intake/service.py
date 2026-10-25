@@ -75,6 +75,27 @@ def get_instrument(instrument_id: str, db: Session | None = None) -> Instrument 
             session.close()
 
 
+def assign_scrutiny_officer(instrument_id: str, officer_id: str, db: Session | None = None) -> Instrument:
+    """Set the first scrutiny officer assigned to an instrument."""
+    session = db or SessionLocal()
+    should_close = db is None
+    try:
+        instrument = session.query(Instrument).filter(Instrument.id == instrument_id).first()
+        if not instrument:
+            raise NotFoundError("Instrument", instrument_id)
+        if not instrument.scrutiny_officer_id:
+            instrument.scrutiny_officer_id = officer_id
+            if should_close:
+                session.commit()
+                session.refresh(instrument)
+            else:
+                session.flush()
+        return instrument
+    finally:
+        if should_close:
+            session.close()
+
+
 def has_open_high(instrument_id: str, db: Session | None = None) -> bool:
     """Return whether an instrument has an OPEN or ESCALATED HIGH discrepancy."""
     session = db or SessionLocal()
@@ -162,6 +183,43 @@ def get_fields(instrument_id: str, db: Session | None = None) -> dict[str, dict[
                 "evidence_ref": f.evidence_ref,
             }
         return result
+    finally:
+        if should_close:
+            session.close()
+
+
+def set_field_trust(
+    instrument_id: str, field_name: str, trust: str, source: str,
+    evidence_ref: str, value: str | None = None, db: Session | None = None,
+) -> FieldTrust:
+    """Set a field's trust metadata through the intake service boundary."""
+    session = db or SessionLocal()
+    should_close = db is None
+    try:
+        field = session.query(FieldTrust).filter(
+            FieldTrust.instrument_id == instrument_id,
+            FieldTrust.field_name == field_name,
+        ).first()
+        if not field:
+            field = FieldTrust(
+                id=str(uuid4()), instrument_id=instrument_id, field_name=field_name,
+                value=value, trust=trust, source=source, evidence_ref=evidence_ref,
+                set_at=clock.now(),
+            )
+            session.add(field)
+        else:
+            if value is not None:
+                field.value = value
+            field.trust = trust
+            field.source = source
+            field.evidence_ref = evidence_ref
+            field.set_at = clock.now()
+        if should_close:
+            session.commit()
+            session.refresh(field)
+        else:
+            session.flush()
+        return field
     finally:
         if should_close:
             session.close()
