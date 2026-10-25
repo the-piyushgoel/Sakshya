@@ -2,6 +2,7 @@
 Tests for Intake stub router (§3.5).
 """
 import io
+from pathlib import Path
 
 import pytest
 from app.core import clock
@@ -150,24 +151,26 @@ def test_list_and_get_obligations():
 def test_preview_document_genuine_and_tampered():
     """Verify POST /documents/preview returns DocumentPreviewResponse with genuine/tampered checks."""
     headers = auth_header("ar_sig")
+    samples_dir = Path(__file__).resolve().parents[3] / "samples" / "out"
 
     # Genuine PDF
-    fake_genuine = io.BytesIO(b"%PDF-1.4 genuine content")
+    genuine_pdf = samples_dir / "fdr_genuine_aryabhatta.pdf"
     res_gen = client.post(
         "/api/documents/preview",
-        files={"file": ("fdr_genuine.pdf", fake_genuine, "application/pdf")},
+        files={"file": (genuine_pdf.name, genuine_pdf.read_bytes(), "application/pdf")},
         headers=headers,
     )
     assert res_gen.status_code == 200
     preview_gen = DocumentPreviewResponse.model_validate(res_gen.json())
     assert "fdr_number" in preview_gen.extracted
+    assert len(preview_gen.extracted) >= 7
     assert preview_gen.flags == []
 
     # Tampered PDF
-    fake_tampered = io.BytesIO(b"%PDF-1.4 tampered content")
+    tampered_pdf = samples_dir / "fdr_tampered_amount.pdf"
     res_tamp = client.post(
         "/api/documents/preview",
-        files={"file": ("fdr_tampered.pdf", fake_tampered, "application/pdf")},
+        files={"file": (tampered_pdf.name, tampered_pdf.read_bytes(), "application/pdf")},
         headers=headers,
     )
     assert res_tamp.status_code == 200

@@ -56,6 +56,8 @@ from app.modules.intake.schemas import (
     ObligationSummary,
     TimelineEvent,
 )
+from app.modules.intake.uploads import validate_pdf
+from doc_intel import analyze
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse
 
@@ -267,14 +269,33 @@ def get_obligation(
 @router.post("/documents/preview", response_model=DocumentPreviewResponse)
 def preview_document(
     file: UploadFile = File(...),
+    fdr_number: str | None = Form(None),
+    bank_ifsc: str | None = Form(None),
+    principal_paise: int | None = Form(None),
+    issue_date: str | None = Form(None),
+    maturity_date: str | None = Form(None),
+    interest_rate_pct: str | None = Form(None),
+    favouring: str | None = Form(None),
+    holder_names: str | None = Form(None),
     current_user: User = Depends(require_roles(*_INTAKE_WRITE_ROLES, Role.SCRUTINY_OFFICER)),
 ):
     """Upload a PDF for AI-powered field extraction and tamper checks."""
-    # TODO PY-2b: replace stub
-    filename = (file.filename or "").lower()
-    if "tamper" in filename or "fake" in filename:
-        return _TAMPERED_PREVIEW
-    return _GENUINE_PREVIEW
+    data = file.file.read()
+    validate_pdf(data, file.filename or "")
+    entered = {
+        key: value for key, value in {
+            "fdr_number": fdr_number, "bank_ifsc": bank_ifsc,
+            "principal_paise": principal_paise, "issue_date": issue_date,
+            "maturity_date": maturity_date, "interest_rate_pct": interest_rate_pct,
+            "favouring": favouring, "holder_names": holder_names,
+        }.items() if value is not None
+    }
+    result = analyze(data, entered)
+    result["extracted"] = {
+        name: {**field, "value": str(field["value"])}
+        for name, field in result.get("extracted", {}).items()
+    }
+    return DocumentPreviewResponse.model_validate(result)
 
 
 @router.post("/instruments", response_model=InstrumentOut)
