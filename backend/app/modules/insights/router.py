@@ -12,28 +12,24 @@ Endpoints from §3.5:
 import csv
 from datetime import date, datetime, timedelta
 import io
+import math
+from statistics import median
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
-from app.core import audit, clock
+from app.core import audit, clock, jobs, policy
 from app.core.db import get_db
-from app.core.deps import get_current_user, require_roles
+from app.core.deps import require_roles
 from app.core.enums import InstrumentState, Role, TrustLevel
 from app.core.errors import NotFoundError
-from app.core.models import User
-from app.modules.bank.models import Bank
+from app.core.models import AuditEvent, JobRun, User
+from app.modules.bank.models import Bank, BankRequest
 from app.modules.insights import risk
-from app.modules.intake.models import (
-    Discrepancy,
-    FieldTrust,
-    Institute,
-    Instrument,
-    InstrumentStateHistory,
-    InstrumentVersion,
-    Obligation,
-)
+from app.modules.insights.models import RiskScore
+from app.modules.intake.models import Discrepancy, Institute, Instrument, Obligation
+from app.modules.release.models import ReleaseRequest
 
 router = APIRouter(tags=["insights"])
 
@@ -46,6 +42,8 @@ OFFICER_ROLES = [
     Role.AUDITOR,
     Role.SYSTEM_ADMIN,
 ]
+_CRITICAL_FIELDS = {"principal_paise", "maturity_date", "favouring", "lien_marked"}
+_TAMPER_CODES = {"D-10", "D-12"}
 
 
 def _extract_fields(ins: Instrument) -> dict[str, Any]:
@@ -72,47 +70,81 @@ def _compute_instrument_factors(ins: Instrument, now: datetime) -> tuple[dict[st
     now_naive = _to_naive(now)
 
     # 1. f_flags (discrepancies)
-    high_disc = sum(1 for d in ins.discrepancies if d.status == "OPEN" and d.severity == "HIGH")
-    total_disc = sum(1 for d in ins.discrepancies if d.status == "OPEN")
-    f_flags = min(1.0, (high_disc * 0.4) + (total_disc * 0.15))
+    open_discrepancies = [d for d in ins.discrepancies if d.status == "OPEN"]
+    high_disc = sum(1 for d in open_discrepancies if d.severity == "HIGH")
+    flag_points = sum(
+        {"HIGH": 3.0, "MEDIUM": 1.5, "LOW": 0.5}.get(d.severity, 0.0)
+        + (1.0 if d.code in _TAMPER_CODES else 0.0)
+        for d in open_discrepancies
+    )
+    f_flags = min(1.0, flag_points / 6.0)
 
     # 2. f_aging (days in current state)
-    created_dt = _to_naive(ins.created_at) if ins.created_at else now_naive
-    age_days = max(0, (now_naive - created_dt).days)
-    f_aging = min(1.0, age_days / 30.0)
+    state_since = max(
+        (_to_naive(item.at) for item in ins.history if item.to_state == ins.state),
+        default=_to_naive(ins.created_at) if ins.created_at else now_naive,
+    )
+    age_days = max(0, (now_naive - state_since).days)
+    f_aging = min(1.0, age_days / 60.0)
 
     # 3. f_amount (principal amount normalized up to 10 Cr)
     try:
         principal = int(fields.get("principal_paise", 0))
     except (ValueError, TypeError):
         principal = 0
-    f_amount = min(1.0, principal / 1000000000)
+    active_amounts = getattr(ins, "_active_amounts", ())
+    f_amount = (
+        sum(1 for amount in active_amounts if amount <= principal) / len(active_amounts)
+        if active_amounts else 0.0
+    )
 
     # 4. f_maturity
+    mat_str = fields.get("maturity_date")
     try:
-        mat_str = fields.get("maturity_date")
-        if mat_str:
-            if isinstance(mat_str, str):
-                mat_date = date.fromisoformat(mat_str[:10])
-            elif isinstance(mat_str, date):
-                mat_date = mat_str
-            else:
-                mat_date = now.date() + timedelta(days=180)
-            days_to_mat = (mat_date - now.date()).days
-            f_maturity = risk.maturity_factor(ins.state, days_to_mat)
-        else:
-            f_maturity = 0.2
-    except Exception:
-        f_maturity = 0.2
+        mat_date = date.fromisoformat(str(mat_str)[:10]) if mat_str else None
+    except ValueError:
+        mat_date = None
+    f_maturity = (
+        risk.maturity_factor(ins.state, (mat_date - now.date()).days)
+        if mat_date else risk.maturity_factor(ins.state, None) if ins.state == InstrumentState.LAPSED.value else 0.0
+    )
 
     # 5. f_bank (base risk from bank status)
-    f_bank = 0.15 if ins.state in (InstrumentState.BANK_PENDING.value, InstrumentState.DISCREPANCY.value) else 0.05
+    bank_requests = getattr(ins, "bank_requests", ())
+    response_delays = [
+        max(0, (_to_naive(req.responded_at) - _to_naive(req.created_at)).days)
+        for req in bank_requests if req.responded_at is not None
+    ]
+    timeout_days = max(1, int(policy.get("bank_request_timeout_days", 30)))
+    f_bank = min(1.0, median(response_delays) / timeout_days) if response_delays else (
+        1.0 if ins.state == InstrumentState.BANK_PENDING.value and age_days >= timeout_days else
+        min(1.0, age_days / timeout_days) if ins.state == InstrumentState.BANK_PENDING.value else 0.0
+    )
 
     # 6. f_inst (base institute risk)
-    f_inst = 0.25 if ins.is_quarantined else 0.05
+    institute_instruments = getattr(ins, "_institute_instruments", ())
+    history_events = sum(
+        1 for item in institute_instruments
+        if item.is_quarantined or item.state == InstrumentState.LAPSED.value
+    )
+    institute_disc = sum(
+        1 for item in institute_instruments for discrepancy in item.discrepancies
+        if discrepancy.status == "OPEN"
+    )
+    f_inst = min(1.0, (history_events * 0.25) + (institute_disc * 0.1))
 
     # 7. f_recon (staleness)
-    f_recon = 0.1
+    confirmations = [
+        _to_naive(req.responded_at)
+        for req in bank_requests
+        if req.responded_at is not None and req.state in {"CONFIRMED", "CONFIRMED_WITH_EXCEPTIONS"}
+    ]
+    cadence_days = 90
+    if confirmations:
+        stale_days = max(0, (now_naive - max(confirmations)).days)
+        f_recon = min(1.0, stale_days / cadence_days)
+    else:
+        f_recon = 1.0
 
     factors = {
         "f_flags": round(f_flags, 2),
@@ -124,15 +156,86 @@ def _compute_instrument_factors(ins: Instrument, now: datetime) -> tuple[dict[st
         "f_recon": round(f_recon, 2),
     }
 
-    details = {}
+    details: dict[str, str] = {}
     if high_disc > 0:
         details["f_flags"] = f"{high_disc} open HIGH severity discrepancy flags"
     if age_days > 5:
         details["f_aging"] = f"{age_days} days in {ins.state} without final approval"
     if principal >= 250000000:
-        details["f_amount"] = f"High value FDR: ₹{principal // 100000:,} Lakhs"
+        details["f_amount"] = f"High-value FDR: ₹{principal // 100000:,} lakhs"
+    if f_maturity >= 1 and ins.state == InstrumentState.LAPSED.value:
+        details["f_maturity"] = "Instrument has lapsed"
+    elif mat_date is not None:
+        days_to_maturity = (mat_date - now.date()).days
+        if days_to_maturity <= 180:
+            details["f_maturity"] = f"Maturity in {max(days_to_maturity, 0)} days"
+    if f_bank > 0:
+        details["f_bank"] = f"Bank response risk {f_bank:.0%}"
+    if f_recon > 0:
+        details["f_recon"] = f"Bank confirmation is {f_recon:.0%} stale"
 
     return factors, details
+
+
+def _instrument_amount(ins: Instrument) -> int:
+    value = _extract_fields(ins).get("principal_paise", 0)
+    try:
+        amount = int(value)
+    except (ValueError, TypeError):
+        return 0
+    return max(0, amount)
+
+
+def _prepare_instruments(db: Session, instruments: list[Instrument]) -> None:
+    instrument_ids = {item.id for item in instruments}
+    active_amounts = sorted(
+        _instrument_amount(item)
+        for item in db.query(Instrument).filter(Instrument.state == InstrumentState.ACTIVE.value).all()
+    )
+    institute_ids = {item.institute_id for item in instruments}
+    requests_by_instrument: dict[str, list[BankRequest]] = {}
+    if instrument_ids:
+        for request in db.query(BankRequest).filter(BankRequest.instrument_id.in_(instrument_ids)).all():
+            requests_by_instrument.setdefault(request.instrument_id, []).append(request)
+    institute_instruments: dict[str, list[Instrument]] = {}
+    for institute_id in institute_ids:
+        institute_instruments[institute_id] = db.query(Instrument).filter(
+            Instrument.institute_id == institute_id,
+        ).all()
+    for item in instruments:
+        item._active_amounts = active_amounts
+        item._institute_instruments = institute_instruments.get(item.institute_id, [])
+        item.bank_requests = sorted(
+            requests_by_instrument.get(item.id, []),
+            key=lambda request: request.created_at,
+        )
+
+
+def _risk_weights() -> dict[str, float]:
+    weights = policy.get("risk_weights", risk.FACTOR_WEIGHTS)
+    return weights if isinstance(weights, dict) else risk.FACTOR_WEIGHTS
+
+
+def rescore_all(db: Session, now_dt: datetime) -> dict[str, int]:
+    """Recompute and persist one risk snapshot for every instrument."""
+    instruments = db.query(Instrument).all()
+    _prepare_instruments(db, instruments)
+    weights = _risk_weights()
+    for instrument in instruments:
+        factors, _ = _compute_instrument_factors(instrument, now_dt)
+        calculated = risk.score(factors, weights)
+        snapshot = db.query(RiskScore).filter(RiskScore.instrument_id == instrument.id).first()
+        if snapshot is None:
+            snapshot = RiskScore(instrument_id=instrument.id, score=calculated, factors_json=factors, computed_at=now_dt)
+            db.add(snapshot)
+        else:
+            snapshot.score = calculated
+            snapshot.factors_json = factors
+            snapshot.computed_at = now_dt
+    return {"rescored": len(instruments)}
+
+
+jobs.register("insights_rescore_all", rescore_all)
 
 
 # ── GET /queue ─────────────────────────────────────────────────────────────────
@@ -168,40 +271,135 @@ def get_case_queue(
         query = query.filter(Instrument.bank_id == bank_id)
 
     instruments = query.all()
+    _prepare_instruments(db, instruments)
     queue_items = []
+    weights = _risk_weights()
 
     for ins in instruments:
         factors, details = _compute_instrument_factors(ins, now)
-        score = risk.score(factors)
+        score = risk.score(factors, weights)
         sla_breached = any(d.severity == "HIGH" for d in ins.discrepancies if d.status == "OPEN")
-        item_priority = risk.priority(score, sla_breached=sla_breached)
+        open_request = next(
+            (request for request in reversed(ins.bank_requests)
+             if request.state in {"CREATED", "NOTIFIED", "ACKNOWLEDGED", "MAKER_SUBMITTED", "ESCALATED"}),
+            None,
+        )
+        sla_due = None
+        due_in_days = None
+        if open_request:
+            timeout_days = int(policy.get("bank_request_timeout_days", 30))
+            due_at = _to_naive(open_request.created_at) + timedelta(days=timeout_days)
+            sla_due = due_at.isoformat()
+            due_in_days = (due_at.date() - now.date()).days
+            sla_breached = sla_breached or due_in_days < 0
+        item_priority = risk.priority(score, sla_breached=sla_breached, due_in_days=due_in_days)
         reasons = risk.explain(factors, details=details, limit=3)
         fields = _extract_fields(ins)
 
-        try:
-            amt = int(fields.get("principal_paise", 0))
-        except (ValueError, TypeError):
-            amt = 0
+        amount = _instrument_amount(ins)
+        bank = db.query(Bank).filter(Bank.id == ins.bank_id).first()
+        age_days = max(0, (now.date() - _to_naive(ins.created_at).date()).days)
 
         queue_items.append({
             "case_type": "INSTRUMENT",
             "id": ins.id,
+            "institute": ins.obligation.institute.name if ins.obligation and ins.obligation.institute else "Unknown",
             "institute_id": ins.institute_id,
             "institute_name": ins.obligation.institute.name if ins.obligation and ins.obligation.institute else "Unknown",
             "bank_id": ins.bank_id,
+            "bank": bank.name if bank else ins.bank_id,
             "fdr_number": fields.get("fdr_number", "UNKNOWN"),
-            "principal_paise": amt,
+            "amount": amount,
+            "principal_paise": amount,
             "state": ins.state,
             "owner_role": "SCRUTINY_OFFICER" if ins.state in (InstrumentState.SCRUTINY.value, InstrumentState.AUTO_CHECKING.value) else "APPROVING_OFFICER",
             "score": score,
             "priority": item_priority,
             "sla_breached": sla_breached,
+            "sla_due": sla_due,
+            "age_days": age_days,
             "reasons": reasons,
             "created_at": ins.created_at.isoformat() if ins.created_at else now.isoformat(),
         })
 
-    # Sort descending by priority
-    queue_items.sort(key=lambda x: x["priority"], reverse=True)
+    release_states = ["SUBMITTED", "INELIGIBLE", "SCRUTINY"]
+    release_query = db.query(ReleaseRequest)
+    if state:
+        release_query = release_query.filter(ReleaseRequest.state == state)
+    else:
+        release_query = release_query.filter(ReleaseRequest.state.in_(release_states))
+
+    active_amounts = sorted(
+        _instrument_amount(item)
+        for item in db.query(Instrument).filter(Instrument.state == InstrumentState.ACTIVE.value).all()
+    )
+    for request in release_query.all():
+        request_instruments = db.query(Instrument).filter(
+            Instrument.id.in_(request.instrument_ids_json or []),
+        ).all() if request.instrument_ids_json else []
+        request_bank_id = request_instruments[0].bank_id if request_instruments else None
+        if bank_id and request_bank_id != bank_id:
+            continue
+
+        institute = db.query(Institute).filter(Institute.id == request.institute_id).first()
+        bank = db.query(Bank).filter(Bank.id == request_bank_id).first() if request_bank_id else None
+        age_days = max(0, (now.date() - _to_naive(request.created_at).date()).days)
+        timeout_days = int(policy.get("release_review_timeout_days", 7))
+        due_at = _to_naive(request.created_at) + timedelta(days=timeout_days)
+        due_in_days = (due_at.date() - now.date()).days
+        sla_breached = due_in_days < 0
+
+        failed_rules = [rule for rule in request.rules if rule.result in {"FAIL", "MANUAL"}]
+        warned_rules = [rule for rule in request.rules if rule.result == "WARN"]
+        f_flags = min(1.0, len(failed_rules) * 0.5 + len(warned_rules) * 0.1)
+        f_amount = (
+            sum(1 for amount in active_amounts if amount <= request.total_amount_paise) / len(active_amounts)
+            if active_amounts else min(1.0, request.total_amount_paise / 1_000_000_000)
+        )
+        factors = {
+            "f_flags": f_flags,
+            "f_aging": min(1.0, age_days / 60.0),
+            "f_amount": f_amount,
+            "f_maturity": 0.0,
+            "f_bank": 0.0,
+            "f_inst": 0.0,
+            "f_recon": 0.0,
+        }
+        details: dict[str, str] = {}
+        if failed_rules:
+            details["f_flags"] = "Eligibility review required: " + ", ".join(rule.rule_id for rule in failed_rules)
+        elif warned_rules:
+            details["f_flags"] = "Eligibility warnings: " + ", ".join(rule.rule_id for rule in warned_rules)
+        if age_days > 0:
+            details["f_aging"] = f"Release request pending for {age_days} days"
+        if request.total_amount_paise >= 250_000_000:
+            details["f_amount"] = f"High-value release: ₹{request.total_amount_paise // 100:,}"
+
+        score = risk.score(factors, weights)
+        priority = risk.priority(score, sla_breached=sla_breached, due_in_days=due_in_days)
+        queue_items.append({
+            "case_type": "RELEASE",
+            "id": request.id,
+            "institute": institute.name if institute else request.institute_id,
+            "institute_id": request.institute_id,
+            "institute_name": institute.name if institute else request.institute_id,
+            "bank_id": request_bank_id,
+            "bank": bank.name if bank else request_bank_id,
+            "fdr_number": _extract_fields(request_instruments[0]).get("fdr_number", "UNKNOWN") if request_instruments else "UNKNOWN",
+            "amount": request.total_amount_paise,
+            "principal_paise": request.total_amount_paise,
+            "state": request.state,
+            "owner_role": "SCRUTINY_OFFICER" if request.state in {"SUBMITTED", "SCRUTINY"} else "APPROVING_OFFICER",
+            "score": score,
+            "priority": priority,
+            "sla_breached": sla_breached,
+            "sla_due": due_at.isoformat(),
+            "age_days": age_days,
+            "reasons": risk.explain(factors, weights, details=details, limit=3),
+            "created_at": request.created_at.isoformat() if request.created_at else now.isoformat(),
+        })
+
+    queue_items.sort(key=lambda item: (-item["priority"], -item["age_days"], item["id"]))
 
     return {
         "items": queue_items,
@@ -223,8 +421,9 @@ def get_instrument_risk(
         raise NotFoundError("Instrument not found")
 
     now = clock.now()
+    _prepare_instruments(db, [ins])
     factors, details = _compute_instrument_factors(ins, now)
-    score = risk.score(factors)
+    score = risk.score(factors, _risk_weights())
     sla_breached = any(d.severity == "HIGH" for d in ins.discrepancies if d.status == "OPEN")
     item_priority = risk.priority(score, sla_breached=sla_breached)
     reasons = risk.explain(factors, details=details, limit=3)
@@ -257,7 +456,7 @@ def get_kpi_summary(
     active_value = 0
     l2_count = 0
 
-    critical_fields = {"principal_paise", "maturity_date", "favouring", "lien_marked"}
+    critical_fields = _CRITICAL_FIELDS
 
     for ins in instruments:
         fields = _extract_fields(ins)
@@ -275,11 +474,11 @@ def get_kpi_summary(
             ft.field_name for ft in ins.fields
             if ft.trust == TrustLevel.L2_BANK_CONFIRMED.value and ft.field_name in critical_fields
         }
-        if len(confirmed) == len(critical_fields):
+        if critical_fields.issubset(confirmed):
             l2_count += 1
 
-    total_instruments = len(instruments) or 1
-    record_accuracy_pct = round((l2_count / total_instruments) * 100, 1)
+    total_instruments = len(instruments)
+    record_accuracy_pct = round((l2_count / total_instruments) * 100, 1) if total_instruments else 0.0
 
     # Aging buckets for instruments not yet closed
     aging = {"0_7_days": 0, "8_14_days": 0, "15_30_days": 0, "30_plus_days": 0}
@@ -297,7 +496,37 @@ def get_kpi_summary(
             else:
                 aging["30_plus_days"] += 1
 
+    confirmed_requests = db.query(BankRequest).filter(
+        BankRequest.responded_at.isnot(None),
+        BankRequest.state.in_(("CONFIRMED", "CONFIRMED_WITH_EXCEPTIONS")),
+    ).all()
+    verification_durations = [
+        max(0.0, (_to_naive(request.responded_at) - _to_naive(request.created_at)).total_seconds() / 86400)
+        for request in confirmed_requests
+    ]
+    verification_tat = round(median(verification_durations), 1) if verification_durations else 0.0
+    sorted_durations = sorted(verification_durations)
+    p90_index = max(0, math.ceil(len(sorted_durations) * 0.9) - 1)
+    verification_p90 = round(sorted_durations[p90_index], 1) if sorted_durations else 0.0
+
+    renewals = [instrument for instrument in instruments if instrument.supersedes_id]
+    renewed_on_time = 0
+    for renewal in renewals:
+        old = db.query(Instrument).filter(Instrument.id == renewal.supersedes_id).first()
+        old_maturity = _extract_fields(old).get("maturity_date") if old else None
+        try:
+            renewed_on_time += int(
+                bool(old_maturity)
+                and renewal.created_at.date() <= date.fromisoformat(str(old_maturity)[:10])
+            )
+        except ValueError:
+            continue
+    renewals_on_time_pct = round(100 * renewed_on_time / len(renewals), 1) if renewals else 0.0
+    automated_actions = db.query(JobRun).filter(JobRun.status == "SUCCESS").count()
     open_disc = db.query(Discrepancy).filter(Discrepancy.status == "OPEN").count()
+    discrepancy_counts: dict[str, int] = {}
+    for code, in db.query(Discrepancy.code).filter(Discrepancy.status == "OPEN").all():
+        discrepancy_counts[code] = discrepancy_counts.get(code, 0) + 1
 
     return {
         "total_value_paise": total_value,
@@ -305,10 +534,13 @@ def get_kpi_summary(
         "total_instruments": len(instruments),
         "active_instruments": sum(1 for i in instruments if i.state == InstrumentState.ACTIVE.value),
         "record_accuracy_pct": record_accuracy_pct,
-        "verification_tat_days": 3.2,
-        "renewals_on_time_pct": 96.5,
+        "verification_tat_days": verification_tat,
+        "verification_tat_p90_days": verification_p90,
+        "renewals_on_time_pct": renewals_on_time_pct,
         "pending_aging_buckets": aging,
+        "automated_actions_count": automated_actions,
         "open_discrepancies": open_disc,
+        "discrepancies_by_code": discrepancy_counts,
         "as_of": now.isoformat(),
     }
 
@@ -383,7 +615,7 @@ def get_maturity_ladder(
                 ladder["181_365_days"] += 1
             else:
                 ladder["over_365_days"] += 1
-        except Exception:
+        except ValueError:
             continue
 
     return {
