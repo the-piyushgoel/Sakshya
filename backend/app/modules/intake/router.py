@@ -21,6 +21,7 @@ Endpoints from §3.5:
 """
 from pathlib import Path
 
+from app.core.db import SessionLocal
 from app.core.deps import require_roles, require_step_up
 from app.core.enums import (
     BankRequestState,
@@ -35,6 +36,7 @@ from app.core.enums import (
 from app.core.errors import NotFoundError, ValidationError
 from app.core.models import User
 from app.modules.intake.ids import bank_id, institute_id, stable_id
+from app.modules.intake.pipeline import submit_instrument
 from app.modules.intake.schemas import (
     BankRequestSummary,
     DiscrepancyListResponse,
@@ -298,7 +300,7 @@ def preview_document(
     return DocumentPreviewResponse.model_validate(result)
 
 
-@router.post("/instruments", response_model=InstrumentOut)
+@router.post("/instruments", response_model=InstrumentDetail)
 def create_instrument(
     file: UploadFile = File(...),
     obligation_id: str = Form(...),
@@ -308,11 +310,36 @@ def create_instrument(
     issue_date: str = Form(...),
     maturity_date: str = Form(...),
     interest_rate_pct: str = Form("7.25"),
-    current_user: User = Depends(require_roles(*_INTAKE_WRITE_ROLES)),
+    holder_names: str | None = Form(None),
+    current_user: User = Depends(require_roles(Role.INS_SIGNATORY)),
 ):
     """Submit a new FDR instrument with scanned document (multipart)."""
-    # TODO PY-2b: replace stub
-    return _MOCK_INST_ARYABHATTA
+    data = file.file.read()
+    validate_pdf(data, file.filename or "")
+    entered = {
+        "fdr_number": fdr_number,
+        "bank_ifsc": bank_ifsc,
+        "principal_paise": principal_paise,
+        "issue_date": issue_date,
+        "maturity_date": maturity_date,
+        "interest_rate_pct": interest_rate_pct,
+    }
+    if holder_names:
+        entered["holder_names"] = holder_names
+    db = SessionLocal()
+    try:
+        detail = submit_instrument(
+            db, institute_id=current_user.institute_id, actor=current_user,
+            obligation_id=obligation_id, filename=file.filename or "document.pdf",
+            data=data, entered=entered,
+        )
+        db.commit()
+        return detail
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 @router.get("/instruments", response_model=InstrumentListResponse)

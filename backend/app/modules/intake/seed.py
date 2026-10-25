@@ -24,6 +24,13 @@ from .models import (
 )
 from .security import fingerprint
 
+RESERVED_FDR_NUMBERS = {
+    "BRB-FDR-2024-000101",
+    "BRB-FDR-2024-000102",
+    "BRB-FDR-2024-000103",
+    "BRB-FDR-2021-004711",
+}
+
 
 def _today() -> date:
     try:
@@ -90,7 +97,9 @@ def seed() -> None:
             institute = Institute(id=institute_id(slug), name=name, code=slug.upper(), city="New Delhi")
             trust = Trust(id=stable_id("trust", slug), institute_id=institute.id, name=trust_name)
             obligation = Obligation(id=stable_id("obligation", slug), institute_id=institute.id, trust_id=trust.id,
-                                    programme="AICTE FDR obligation", required_paise=450000000, term_years=10,
+                                    programme="AICTE FDR obligation",
+                                    required_paise=250000000 if slug == "aryabhatta" else 450000000,
+                                    term_years=10,
                                     start_date=today - timedelta(days=365), end_date=today + timedelta(days=3650), state=state)
             session.add_all([institute, trust, obligation])
             rows.append((slug, obligation))
@@ -109,6 +118,7 @@ def seed() -> None:
         filler = random.Random(42)
         states = [InstrumentState.ACTIVE.value, InstrumentState.SCRUTINY.value,
                   InstrumentState.BANK_PENDING.value, InstrumentState.DISCREPANCY.value]
+        fdr_sequence = 100
         for index in range(16):
             slug = f"filler-{index:02d}"
             institute = Institute(id=institute_id(slug), name=f"Filler Institute {index + 1}", code=slug.upper(), city="Pune")
@@ -120,9 +130,14 @@ def seed() -> None:
             session.add_all([institute, trust, obligation])
             state = states[index % len(states)]
             bank = ["BRB", "HCB", "SCB"][filler.randrange(3)]
-            _instrument(session, obligation, slug, bank, state, today, f"{bank}-FDR-2024-{index + 100:06d}",
+            fdr_number = f"{bank}-FDR-2024-{fdr_sequence:06d}"
+            while fdr_number in RESERVED_FDR_NUMBERS:
+                fdr_sequence += 1
+                fdr_number = f"{bank}-FDR-2024-{fdr_sequence:06d}"
+            _instrument(session, obligation, slug, bank, state, today, fdr_number,
                         today + timedelta(days=30 + index), discrepancy=("D-02", Severity.HIGH.value) if index == 2 else
                         (("D-07", Severity.HIGH.value) if index == 6 else (("D-11", Severity.HIGH.value) if index == 10 else None)))
+            fdr_sequence += 1
         session.commit()
     finally:
         session.close()

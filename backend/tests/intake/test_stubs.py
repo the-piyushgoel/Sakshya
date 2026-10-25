@@ -1,7 +1,6 @@
 """
 Tests for Intake stub router (§3.5).
 """
-import io
 from pathlib import Path
 
 import pytest
@@ -24,7 +23,6 @@ from app.modules.intake.schemas import (
     InstrumentActionResponse,
     InstrumentDetail,
     InstrumentListResponse,
-    InstrumentOut,
     ObligationListResponse,
     ObligationOut,
     TimelineEvent,
@@ -180,12 +178,17 @@ def test_preview_document_genuine_and_tampered():
 
 def test_create_and_list_instruments():
     """Verify POST /instruments and GET /instruments lifecycle."""
+    from app.modules.bank.seed import seed as seed_bank
+    from app.modules.intake.seed import seed as seed_intake
+
+    seed_intake()
+    seed_bank()
     headers = auth_header("ar_sig")
-    fake_pdf = io.BytesIO(b"%PDF-1.4 test instrument")
+    pdf_path = Path(__file__).resolve().parents[3] / "samples" / "out" / "fdr_genuine_aryabhatta.pdf"
 
     res_post = client.post(
         "/api/instruments",
-        files={"file": ("fdr_test.pdf", fake_pdf, "application/pdf")},
+        files={"file": (pdf_path.name, pdf_path.read_bytes(), "application/pdf")},
         data={
             "obligation_id": stable_id("obligation", "aryabhatta"),
             "fdr_number": "FDR-ARYA-401928",
@@ -198,9 +201,9 @@ def test_create_and_list_instruments():
         headers=headers,
     )
     assert res_post.status_code == 200
-    ins_created = InstrumentOut.model_validate(res_post.json())
-    assert ins_created.principal_paise == 450000000
-    assert ins_created.state == InstrumentState.SUBMITTED
+    ins_created = InstrumentDetail.model_validate(res_post.json())
+    assert ins_created.id
+    assert ins_created.state == InstrumentState.SCRUTINY
 
     res_list = client.get("/api/instruments", headers=headers)
     assert res_list.status_code == 200
