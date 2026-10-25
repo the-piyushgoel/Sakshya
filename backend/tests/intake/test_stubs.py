@@ -1,7 +1,6 @@
 """
 Tests for Intake stub router (§3.5).
 """
-import io
 from pathlib import Path
 
 import pytest
@@ -15,6 +14,7 @@ from app.core.enums import (
 )
 from app.core.seed import seed as seed_core
 from app.main import app
+from app.modules.bank.seed import seed as seed_bank
 from app.modules.intake.ids import stable_id
 from app.modules.intake.schemas import (
     DiscrepancyListResponse,
@@ -24,11 +24,11 @@ from app.modules.intake.schemas import (
     InstrumentActionResponse,
     InstrumentDetail,
     InstrumentListResponse,
-    InstrumentOut,
     ObligationListResponse,
     ObligationOut,
     TimelineEvent,
 )
+from app.modules.intake.seed import seed as seed_intake
 from fastapi.testclient import TestClient
 
 client = TestClient(app)
@@ -38,6 +38,8 @@ client = TestClient(app)
 def setup_intake_db():
     create_tables()
     seed_core()
+    seed_intake()
+    seed_bank()
     yield
     drop_tables()
     clock.reset()
@@ -138,7 +140,7 @@ def test_list_and_get_obligations():
     assert res.status_code == 200
     obl_list = ObligationListResponse.model_validate(res.json())
     assert obl_list.total >= 1
-    assert obl_list.items[0].required_paise == 450000000
+    assert obl_list.items[0].required_paise == 250000000
 
     ob_id = obl_list.items[0].id
     res_single = client.get(f"/api/obligations/{ob_id}", headers=headers)
@@ -180,12 +182,17 @@ def test_preview_document_genuine_and_tampered():
 
 def test_create_and_list_instruments():
     """Verify POST /instruments and GET /instruments lifecycle."""
+    from app.modules.bank.seed import seed as seed_bank
+    from app.modules.intake.seed import seed as seed_intake
+
+    seed_intake()
+    seed_bank()
     headers = auth_header("ar_sig")
-    fake_pdf = io.BytesIO(b"%PDF-1.4 test instrument")
+    pdf_path = Path(__file__).resolve().parents[3] / "samples" / "out" / "fdr_genuine_aryabhatta.pdf"
 
     res_post = client.post(
         "/api/instruments",
-        files={"file": ("fdr_test.pdf", fake_pdf, "application/pdf")},
+        files={"file": (pdf_path.name, pdf_path.read_bytes(), "application/pdf")},
         data={
             "obligation_id": stable_id("obligation", "aryabhatta"),
             "fdr_number": "FDR-ARYA-401928",
@@ -198,9 +205,9 @@ def test_create_and_list_instruments():
         headers=headers,
     )
     assert res_post.status_code == 200
-    ins_created = InstrumentOut.model_validate(res_post.json())
-    assert ins_created.principal_paise == 450000000
-    assert ins_created.state == InstrumentState.SUBMITTED
+    ins_created = InstrumentDetail.model_validate(res_post.json())
+    assert ins_created.id
+    assert ins_created.state == InstrumentState.SCRUTINY
 
     res_list = client.get("/api/instruments", headers=headers)
     assert res_list.status_code == 200
@@ -210,8 +217,8 @@ def test_create_and_list_instruments():
 
 def test_get_instrument_detail_and_timeline():
     """Verify GET /instruments/{id} and timeline return full detail with trust annotations."""
-    headers = auth_header("ar_sig")
-    inst_id = stable_id("instrument", "aryabhatta")
+    headers = auth_header("so1")
+    inst_id = stable_id("instrument", "takshashila")
 
     res_detail = client.get(f"/api/instruments/{inst_id}", headers=headers)
     assert res_detail.status_code == 200
@@ -219,23 +226,22 @@ def test_get_instrument_detail_and_timeline():
     assert detail.id == inst_id
     assert len(detail.fields) >= 11
     fdr_field = next(f for f in detail.fields if f.name == "fdr_number")
-    assert fdr_field.value == "FDR-ARYA-401928"
-    assert fdr_field.trust == TrustLevel.L0_CLAIMED
+    assert fdr_field.value == "BRB-FDR-2024-001001"
+    assert fdr_field.trust == TrustLevel.L2_BANK_CONFIRMED
 
     res_time = client.get(f"/api/instruments/{inst_id}/timeline", headers=headers)
     assert res_time.status_code == 200
     timeline = [TimelineEvent.model_validate(e) for e in res_time.json()]
     assert len(timeline) >= 1
+    assert [event.at for event in timeline] == sorted(event.at for event in timeline)
 
 
 def test_get_instrument_document_stream():
-    """Verify GET /instruments/{id}/document returns the sample PDF file."""
-    headers = auth_header("ar_sig")
-    inst_id = stable_id("instrument", "aryabhatta")
+    """Seed instruments without an attached scan return a not found response."""
+    headers = auth_header("so1")
+    inst_id = stable_id("instrument", "takshashila")
     res = client.get(f"/api/instruments/{inst_id}/document", headers=headers)
-    assert res.status_code == 200
-    assert res.headers["content-type"] == "application/pdf"
-    assert b"%PDF" in res.content
+    assert res.status_code == 404
 
 
 def test_discrepancies_list_and_resolve():

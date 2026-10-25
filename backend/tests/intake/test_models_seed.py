@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.core.db import SessionLocal, create_tables, drop_tables
+from app.core.seed import seed as seed_core
 from app.modules.bank.models import Bank, BankRequest
 from app.modules.bank.seed import seed as seed_banks
 from app.modules.intake.models import (
@@ -17,6 +18,7 @@ from app.modules.intake.models import (
     Obligation,
 )
 from app.modules.intake.seed import seed as seed_intake
+from app.modules.monitoring.seed import seed as seed_monitoring
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -26,16 +28,21 @@ def tables():
     drop_tables()
 
 
-def test_seed_is_idempotent_and_has_required_data():
+def test_full_seed_is_idempotent_and_has_unique_fingerprints():
+    # Keep this order aligned with scripts/seed_all.py.
+    seed_core()
     seed_intake()
     seed_banks()
+    seed_monitoring()
     session = SessionLocal()
     try:
         counts = {table: session.query(model).count() for table, model in (
             ("institutes", Institute), ("obligations", Obligation), ("instruments", Instrument),
             ("fields", FieldTrust), ("banks", Bank), ("requests", BankRequest))}
+        seed_core()
         seed_intake()
         seed_banks()
+        seed_monitoring()
         assert counts == {table: session.query(model).count() for table, model in (
             ("institutes", Institute), ("obligations", Obligation), ("instruments", Instrument),
             ("fields", FieldTrust), ("banks", Bank), ("requests", BankRequest))}

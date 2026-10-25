@@ -16,6 +16,7 @@ from app.core.models import User
 from app.modules.intake.models import (
     Discrepancy,
     FieldTrust,
+    Institute,
     Instrument,
     InstrumentStateHistory,
     Obligation,
@@ -85,10 +86,24 @@ def get_obligation(obligation_id: str, db: Session | None = None) -> Obligation 
             session.close()
 
 
+def get_institute(institute_id: str, db: Session) -> Institute | None:
+    """Fetch an institute within the caller's read session."""
+    return db.query(Institute).filter(Institute.id == institute_id).first()
+
+
+def list_obligations(db: Session, institute_id: str | None = None) -> list[Obligation]:
+    """List obligations, optionally restricted to one institute."""
+    query = db.query(Obligation)
+    if institute_id:
+        query = query.filter(Obligation.institute_id == institute_id)
+    return query.order_by(Obligation.id).all()
+
+
 def list_instruments(
     db: Session,
     institute_id: str | None = None,
     state: str | None = None,
+    obligation_id: str | None = None,
 ) -> list[Instrument]:
     """List instruments with optional institute and state filtering."""
     query = db.query(Instrument)
@@ -96,7 +111,9 @@ def list_instruments(
         query = query.filter(Instrument.institute_id == institute_id)
     if state:
         query = query.filter(Instrument.state == state)
-    return query.all()
+    if obligation_id:
+        query = query.filter(Instrument.obligation_id == obligation_id)
+    return query.order_by(Instrument.created_at, Instrument.id).all()
 
 
 def get_fields(instrument_id: str, db: Session | None = None) -> dict[str, dict[str, Any]]:

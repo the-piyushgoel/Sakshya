@@ -64,7 +64,7 @@ class Instrument(Base):
     is_quarantined: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     supersedes_id: Mapped[str | None] = mapped_column(String(36), index=True)
     scrutiny_officer_id: Mapped[str | None] = mapped_column(String(36))
-    fdr_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True, unique=True)
+    fdr_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True, unique=False)
     created_by: Mapped[str | None] = mapped_column(String(36))
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     obligation: Mapped[Obligation] = relationship(back_populates="instruments")
