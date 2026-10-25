@@ -48,6 +48,11 @@ class ReleaseRequest(Base):
         back_populates="request",
         uselist=False,
     )
+    settlement: Mapped["Settlement | None"] = relationship(
+        "Settlement",
+        back_populates="request",
+        uselist=False,
+    )
 
 
 class EligibilityRuleResult(Base):
@@ -127,6 +132,62 @@ class ReleaseLetter(Base):
     revoked_by_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     superseded_by_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
+    # Bank Execution (remittance maker-checker) fields
+    execution_maker_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    execution_maker_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    utr: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    execution_principal_paise: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    execution_aicte_share_paise: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    execution_date: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    execution_checker_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    execution_checker_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    execution_decision: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    execution_remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     request: Mapped["ReleaseRequest"] = relationship("ReleaseRequest", back_populates="letter")
+    settlement: Mapped["Settlement | None"] = relationship(
+        "Settlement",
+        back_populates="letter",
+        uselist=False,
+    )
+
+
+class Settlement(Base):
+    """
+    Financial reconciliation record for AICTE share and FDR settlement (SRS §7.2, FR-FIN-01..03).
+    Created upon bank execution authorization; reconciled and confirmed by Finance Officer.
+    """
+    __tablename__ = "settlement"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_id)
+    release_request_id: Mapped[str] = mapped_column(
+        ForeignKey("release_request.id"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    letter_id: Mapped[str] = mapped_column(
+        ForeignKey("release_letter.id"),
+        nullable=False,
+        index=True,
+    )
+    institute_id: Mapped[str] = mapped_column(
+        ForeignKey("institute.id"),
+        nullable=False,
+        index=True,
+    )
+    bank_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    expected_aicte_share_paise: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    credited_paise: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bank_ref: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    is_settled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    confirmed_by_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    override_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    request: Mapped["ReleaseRequest"] = relationship("ReleaseRequest", back_populates="settlement")
+    letter: Mapped["ReleaseLetter"] = relationship("ReleaseLetter", back_populates="settlement")
 
 

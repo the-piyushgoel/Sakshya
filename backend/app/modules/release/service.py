@@ -7,7 +7,7 @@ Implements:
 - Compliance hold management (place, lift, get_active_hold)
 - Instrument release locking via intake.service.transition
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -19,19 +19,32 @@ from app.core.enums import (
     EligibilityVerdict,
     InstrumentState,
     LetterState,
+    ObligationState,
     ReleaseState,
     Role,
     RuleResult,
     TrustLevel,
 )
-from app.core.errors import ForbiddenError, InvalidStateError, NotFoundError, ValidationError
+from app.core.errors import (
+    AmountMismatchError,
+    ForbiddenError,
+    InvalidStateError,
+    NotFoundError,
+    ValidationError,
+)
 from app.core.models import User
 from app.modules.bank import service as bank_service
 from app.modules.bank.models import Bank
 from app.modules.intake import service as intake_service
 from app.modules.intake.models import Discrepancy, Institute, Obligation, Trust
 from app.modules.release.crypto import compute_canonical_hash, generate_verification_code, signer
-from app.modules.release.models import EligibilityRuleResult, Hold, ReleaseLetter, ReleaseRequest
+from app.modules.release.models import (
+    EligibilityRuleResult,
+    Hold,
+    ReleaseLetter,
+    ReleaseRequest,
+    Settlement,
+)
 from app.modules.release.pdf import generate_release_letter_pdf
 from app.modules.release.schemas import HoldScope
 from app.modules.release.settlement import compute_settlement
@@ -1261,4 +1274,393 @@ def revoke_release_letter(letter_id: str, reason: str, actor: User, db: Session)
     db.commit()
     db.refresh(letter)
     return letter
+
+
+# ── Bank Execution & Remittance Workflow (SRS §7.2, FR-REL-14, 15) ─────────────
+
+def _is_expired(valid_until: datetime | None, now: datetime) -> bool:
+    if not valid_until:
+        return False
+    v = valid_until if valid_until.tzinfo else valid_until.replace(tzinfo=timezone.utc)
+    n = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    return n > v
+
+
+def list_bank_letters(actor: User, db: Session) -> list[ReleaseLetter]:
+    """
+    List release letters directed to the authenticated bank for maturity settlement.
+    Enforces multi-tenant bank scoping unless SYSTEM_ADMIN.
+    """
+    query = db.query(ReleaseLetter).filter(
+        ReleaseLetter.state.in_([LetterState.ISSUED.value, LetterState.EXECUTED.value])
+    )
+    if Role.SYSTEM_ADMIN.value not in actor.roles and actor.bank_id:
+        query = query.filter(ReleaseLetter.bank_id == actor.bank_id)
+
+    return query.order_by(ReleaseLetter.issued_at.desc()).all()
+
+
+def execute_letter_maker(
+    letter_id: str,
+    utr: str,
+    principal_paise: int,
+    aicte_share_paise: int,
+    execution_date: str,
+    actor: User,
+    db: Session,
+) -> dict:
+    """
+    Bank Maker submits remittance execution details with payment breakdown (SRS §7.2).
+    Validates exact amount matching and enforces UTR uniqueness.
+    """
+    if Role.BANK_MAKER.value not in actor.roles and Role.SYSTEM_ADMIN.value not in actor.roles:
+        raise ForbiddenError("Only Bank Maker can submit execution details")
+
+    letter = db.query(ReleaseLetter).filter(ReleaseLetter.id == letter_id).first()
+    if not letter:
+        raise NotFoundError(f"Release letter '{letter_id}' not found")
+
+    if Role.SYSTEM_ADMIN.value not in actor.roles and actor.bank_id and letter.bank_id != actor.bank_id:
+        raise ForbiddenError("Access denied: Release letter belongs to a different bank")
+
+    if letter.state == LetterState.EXECUTED.value:
+        raise InvalidStateError("Release letter has already been executed. Replay not permitted.")
+
+    if letter.state != LetterState.ISSUED.value:
+        raise InvalidStateError(f"Cannot execute release letter in state '{letter.state}'. Expected ISSUED.")
+
+    now = clock.now()
+    if _is_expired(letter.valid_until, now):
+        raise InvalidStateError("Release letter has expired. Cannot execute remittance.")
+
+    # Strict amount match against digitally signed release letter
+    if principal_paise != letter.principal_paise or aicte_share_paise != letter.aicte_share_paise:
+        raise AmountMismatchError(
+            f"Submitted amounts (Principal: {principal_paise}, AICTE: {aicte_share_paise}) "
+            f"do not match letter amounts (Principal: {letter.principal_paise}, AICTE: {letter.aicte_share_paise})"
+        )
+
+    # UTR uniqueness validation
+    clean_utr = utr.strip().upper()
+    existing_utr = (
+        db.query(ReleaseLetter)
+        .filter(ReleaseLetter.utr == clean_utr, ReleaseLetter.id != letter.id)
+        .first()
+    )
+    if existing_utr:
+        raise InvalidStateError(f"Duplicate UTR: Transaction reference '{clean_utr}' has already been recorded.")
+
+    letter.execution_maker_id = actor.id
+    letter.execution_maker_at = now
+    letter.utr = clean_utr
+    letter.execution_principal_paise = principal_paise
+    letter.execution_aicte_share_paise = aicte_share_paise
+    letter.execution_date = execution_date
+
+    audit.log(
+        actor=actor,
+        action="BANK_EXECUTION_MAKER_SUBMITTED",
+        entity_type="RELEASE_LETTER",
+        entity_id=letter.id,
+        payload={
+            "utr": clean_utr,
+            "principal_paise": principal_paise,
+            "aicte_share_paise": aicte_share_paise,
+            "execution_date": execution_date,
+            "maker_user_id": actor.id,
+        },
+        db=db,
+    )
+
+    db.commit()
+    return {"status": "MAKER_EXECUTED", "letter_id": letter.id, "utr": clean_utr}
+
+
+def execute_letter_checker(
+    letter_id: str,
+    decision: str,
+    remarks: str | None,
+    actor: User,
+    db: Session,
+) -> dict:
+    """
+    Bank Checker authorises remittance and closes FDR in core banking (SRS §7.2, FR-REL-14..15).
+    Enforces strict Separation of Duties (sod.ensure_different) between maker and checker.
+    Transitions letter to EXECUTED, instruments to RELEASED, and request to SETTLEMENT_PENDING.
+    """
+    if Role.BANK_CHECKER.value not in actor.roles and Role.SYSTEM_ADMIN.value not in actor.roles:
+        raise ForbiddenError("Only Bank Checker can authorize execution")
+
+    letter = db.query(ReleaseLetter).filter(ReleaseLetter.id == letter_id).first()
+    if not letter:
+        raise NotFoundError(f"Release letter '{letter_id}' not found")
+
+    if Role.SYSTEM_ADMIN.value not in actor.roles and actor.bank_id and letter.bank_id != actor.bank_id:
+        raise ForbiddenError("Access denied: Release letter belongs to a different bank")
+
+    if letter.state == LetterState.EXECUTED.value:
+        raise InvalidStateError("Release letter has already been executed. Replay not permitted.")
+
+    if letter.state != LetterState.ISSUED.value:
+        raise InvalidStateError(f"Cannot authorize release letter in state '{letter.state}'. Expected ISSUED.")
+
+    now = clock.now()
+    if _is_expired(letter.valid_until, now):
+        raise InvalidStateError("Release letter has expired. Cannot execute remittance.")
+
+    if not letter.execution_maker_id:
+        raise InvalidStateError("Bank Maker must submit remittance details before Checker authorisation.")
+
+    # Segregation of Duties: checker must be a different individual from maker
+    sod.ensure_different(actor.id, letter.execution_maker_id, rule="BANK_EXECUTION_MAKER_CHECKER")
+
+    decision_norm = decision.strip().upper()
+    if decision_norm == "AUTHORISE":
+        letter.state = LetterState.EXECUTED.value
+        letter.execution_checker_id = actor.id
+        letter.execution_checker_at = now
+        letter.execution_decision = "AUTHORISE"
+        letter.execution_remarks = remarks
+
+        # Cascading transitions: instruments RELEASE_LOCKED -> RELEASED
+        req = db.query(ReleaseRequest).filter(ReleaseRequest.id == letter.release_request_id).first()
+        if req:
+            for ins_id in req.instrument_ids_json:
+                intake_service.transition(
+                    ins_id,
+                    InstrumentState.RELEASED,
+                    actor=actor,
+                    reason=f"Bank execution authorized under UTR {letter.utr}",
+                    db=db,
+                )
+            req.state = ReleaseState.SETTLEMENT_PENDING.value
+            req.updated_at = now
+
+        # Create or update Settlement record for Finance reconciliation
+        settlement = (
+            db.query(Settlement)
+            .filter(Settlement.release_request_id == letter.release_request_id)
+            .first()
+        )
+        if not settlement:
+            settlement = Settlement(
+                id=str(uuid4()),
+                release_request_id=letter.release_request_id,
+                letter_id=letter.id,
+                institute_id=letter.institute_id,
+                bank_id=letter.bank_id,
+                expected_aicte_share_paise=letter.aicte_share_paise,
+                credited_paise=None,
+                bank_ref=letter.utr,
+                is_settled=False,
+                confirmed_at=None,
+                confirmed_by_id=None,
+                override_note=None,
+                created_at=now,
+            )
+            db.add(settlement)
+        else:
+            settlement.expected_aicte_share_paise = letter.aicte_share_paise
+            settlement.bank_ref = letter.utr
+
+        audit.log(
+            actor=actor,
+            action="BANK_EXECUTION_AUTHORISED",
+            entity_type="RELEASE_LETTER",
+            entity_id=letter.id,
+            payload={
+                "utr": letter.utr,
+                "decision": "AUTHORISE",
+                "checker_user_id": actor.id,
+                "remarks": remarks,
+            },
+            db=db,
+        )
+
+        notify.send(
+            title="Settlement pending for executed release letter",
+            body=f"Bank executed remittance under UTR {letter.utr} for release letter {letter.verification_code}. Ready for finance credit reconciliation.",
+            role=Role.FINANCE_OFFICER,
+            level="HIGH",
+            link="/finance/settlements",
+            dedupe_key=f"settlement:{letter.release_request_id}:pending",
+            db=db,
+        )
+
+        db.commit()
+        return {"status": "CHECKER_CONFIRMED", "letter_id": letter.id, "decision": "AUTHORISE"}
+
+    elif decision_norm == "RETURN":
+        letter.execution_decision = "RETURN"
+        letter.execution_remarks = remarks
+        letter.execution_maker_id = None
+        letter.execution_maker_at = None
+        letter.utr = None
+        letter.execution_principal_paise = None
+        letter.execution_aicte_share_paise = None
+
+        audit.log(
+            actor=actor,
+            action="BANK_EXECUTION_RETURNED",
+            entity_type="RELEASE_LETTER",
+            entity_id=letter.id,
+            payload={"decision": "RETURN", "remarks": remarks},
+            db=db,
+        )
+
+        db.commit()
+        return {"status": "CHECKER_RETURNED", "letter_id": letter.id, "decision": "RETURN"}
+    else:
+        raise ValidationError("Decision must be AUTHORISE or RETURN")
+
+
+# ── Finance Settlement Reconciliation (SRS §7.2, FR-FIN-01..03) ────────────────
+
+def list_settlements(actor: User, db: Session) -> list[dict]:
+    """
+    Finance Officer reconciliation dashboard listing settlements and status.
+    """
+    if Role.FINANCE_OFFICER.value not in actor.roles and Role.SYSTEM_ADMIN.value not in actor.roles:
+        raise ForbiddenError("Only Finance Officers can access settlements")
+
+    records = db.query(Settlement).order_by(Settlement.created_at.desc()).all()
+    items = []
+    for s in records:
+        inst = db.query(Institute).filter(Institute.id == s.institute_id).first()
+        bank = db.query(Bank).filter(Bank.id == s.bank_id).first()
+        items.append({
+            "id": s.id,
+            "release_request_id": s.release_request_id,
+            "letter_id": s.letter_id,
+            "institute_id": s.institute_id,
+            "institute_name": inst.name if inst else s.institute_id,
+            "bank_name": bank.name if bank else f"Bank {s.bank_id}",
+            "expected_aicte_share_paise": s.expected_aicte_share_paise,
+            "credited_paise": s.credited_paise,
+            "bank_ref": s.bank_ref,
+            "is_settled": s.is_settled,
+            "confirmed_at": s.confirmed_at.isoformat() if s.confirmed_at else None,
+            "override_note": s.override_note,
+        })
+    return items
+
+
+def confirm_settlement(
+    release_id: str,
+    credited_paise: int,
+    bank_ref: str,
+    override_note: str | None,
+    actor: User,
+    db: Session,
+) -> dict:
+    """
+    Finance Officer confirms receipt of AICTE share and reconciles case.
+    Cascades permanent closure across ReleaseRequest, Instrument, and Obligation.
+    """
+    if Role.FINANCE_OFFICER.value not in actor.roles and Role.SYSTEM_ADMIN.value not in actor.roles:
+        raise ForbiddenError("Only Finance Officers can confirm settlements")
+
+    settlement = (
+        db.query(Settlement)
+        .filter((Settlement.release_request_id == release_id) | (Settlement.id == release_id))
+        .first()
+    )
+    if not settlement:
+        raise NotFoundError(f"Settlement record for release '{release_id}' not found")
+
+    req = db.query(ReleaseRequest).filter(ReleaseRequest.id == settlement.release_request_id).first()
+    if not req:
+        raise NotFoundError(f"Release request '{settlement.release_request_id}' not found")
+
+    if settlement.is_settled or req.state == ReleaseState.CLOSED.value:
+        raise InvalidStateError("Settlement record has already been reconciled and closed.")
+
+    if req.state != ReleaseState.SETTLEMENT_PENDING.value:
+        raise InvalidStateError(
+            f"Cannot confirm settlement for release request in state '{req.state}'. Expected SETTLEMENT_PENDING."
+        )
+
+    # Check credited amount against expected AICTE share
+    if credited_paise != settlement.expected_aicte_share_paise:
+        if not override_note or not override_note.strip():
+            raise AmountMismatchError(
+                f"Credited amount ({credited_paise}) does not match expected AICTE share ({settlement.expected_aicte_share_paise}). "
+                "A mandatory override note is required to reconcile this variance."
+            )
+
+    now = clock.now()
+    settlement.credited_paise = credited_paise
+    settlement.bank_ref = bank_ref.strip()
+    settlement.is_settled = True
+    settlement.confirmed_at = now
+    settlement.confirmed_by_id = actor.id
+    settlement.override_note = override_note.strip() if override_note else None
+
+    # Permanent closure cascade
+    req.state = ReleaseState.CLOSED.value
+    req.updated_at = now
+
+    # Instruments RELEASED -> CLOSED
+    for ins_id in req.instrument_ids_json:
+        intake_service.transition(
+            ins_id,
+            InstrumentState.CLOSED,
+            actor=actor,
+            reason=f"Finance settlement confirmed with bank ref {bank_ref}",
+            db=db,
+        )
+
+    # Obligation -> CLOSED
+    intake_service.set_obligation_state(
+        req.obligation_id,
+        ObligationState.CLOSED,
+        actor=actor,
+        reason="All instruments released, reconciled and closed",
+        db=db,
+    )
+
+    audit.log(
+        actor=actor,
+        action="FINANCE_SETTLEMENT_CONFIRMED",
+        entity_type="SETTLEMENT",
+        entity_id=settlement.id,
+        payload={
+            "release_request_id": settlement.release_request_id,
+            "credited_paise": credited_paise,
+            "expected_paise": settlement.expected_aicte_share_paise,
+            "bank_ref": bank_ref,
+            "override_note": settlement.override_note,
+        },
+        db=db,
+    )
+
+    notify.send(
+        title="FDR release case closed",
+        body=f"Settlement confirmed for release request {req.id}. Case and obligations permanently closed.",
+        role=Role.INS_SIGNATORY,
+        institute_id=req.institute_id,
+        level="HIGH",
+        link="/institute/release",
+        dedupe_key=f"settlement:{settlement.id}:closed",
+        db=db,
+    )
+
+    db.commit()
+
+    inst = db.query(Institute).filter(Institute.id == settlement.institute_id).first()
+    bank = db.query(Bank).filter(Bank.id == settlement.bank_id).first()
+    return {
+        "id": settlement.id,
+        "release_request_id": settlement.release_request_id,
+        "letter_id": settlement.letter_id,
+        "institute_id": settlement.institute_id,
+        "institute_name": inst.name if inst else settlement.institute_id,
+        "bank_name": bank.name if bank else f"Bank {settlement.bank_id}",
+        "expected_aicte_share_paise": settlement.expected_aicte_share_paise,
+        "credited_paise": settlement.credited_paise,
+        "bank_ref": settlement.bank_ref,
+        "is_settled": settlement.is_settled,
+        "confirmed_at": settlement.confirmed_at.isoformat() if settlement.confirmed_at else None,
+        "override_note": settlement.override_note,
+    }
 

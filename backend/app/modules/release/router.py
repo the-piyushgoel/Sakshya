@@ -43,7 +43,13 @@ from app.modules.intake import service as intake_service
 from app.modules.intake.ids import institute_id
 from app.modules.intake.models import Institute
 from app.modules.release import service as release_service
-from app.modules.release.models import EligibilityRuleResult, Hold, ReleaseLetter, ReleaseRequest
+from app.modules.release.models import (
+    EligibilityRuleResult,
+    Hold,
+    ReleaseLetter,
+    ReleaseRequest,
+    Settlement,
+)
 from app.modules.release.schemas import (
     BankExecuteCheckerRequest,
     BankExecuteMakerRequest,
@@ -753,13 +759,35 @@ def lift_hold(
     raise NotFoundError("Hold", id)
 
 
-# ── Bank Execution Endpoints (PR-8 preview) ────────────────────────────────────
+# ── Bank Execution Endpoints (SRS §7.2, FR-REL-14..15) ─────────────────────────
 
 @router.get("/bank/letters", response_model=BankLetterListResponse)
 def list_bank_letters(
     current_user: User = Depends(require_roles(Role.BANK_MAKER, Role.BANK_CHECKER, Role.SYSTEM_ADMIN)),
+    db: Session = Depends(get_db),
 ):
-    """List letters directed to bank for maturity settlement."""
+    """List letters directed to bank for maturity settlement with bank-scoping."""
+    letters = release_service.list_bank_letters(current_user, db)
+    if letters:
+        items = []
+        for let in letters:
+            inst = db.query(Institute).filter(Institute.id == let.institute_id).first()
+            inst_name = inst.name if inst else let.institute_id
+            items.append(
+                BankLetterOut(
+                    letter_id=let.id,
+                    fdr_number=let.fdr_number,
+                    institute_name=inst_name,
+                    principal_paise=let.principal_paise,
+                    aicte_share_paise=let.aicte_share_paise,
+                    status=let.state,
+                    utr=let.utr,
+                    executed_at=let.execution_maker_at.isoformat() if let.execution_maker_at else None,
+                )
+            )
+        return BankLetterListResponse(items=items, total=len(items))
+
+    # Fallback to prototype mock letter if no live letters match
     return BankLetterListResponse(
         items=[
             BankLetterOut(
@@ -783,18 +811,32 @@ def execute_maker(
     db: Session = Depends(get_db),
 ):
     """Bank Maker enters settlement execution UTR and payment breakdown."""
-    if id != _MOCK_LETTER.id:
-        raise NotFoundError("Release letter", id)
+    # Check if real database letter exists
+    db_letter = db.query(ReleaseLetter).filter(ReleaseLetter.id == id).first()
+    if db_letter:
+        return release_service.execute_letter_maker(
+            letter_id=id,
+            utr=payload.utr,
+            principal_paise=payload.principal_paise,
+            aicte_share_paise=payload.aicte_share_paise,
+            execution_date=payload.execution_date,
+            actor=current_user,
+            db=db,
+        )
 
-    audit.log(
-        actor=current_user,
-        action="BANK_EXECUTION_MAKER_SUBMITTED",
-        entity_type="RELEASE_LETTER",
-        entity_id=id,
-        payload={"utr": payload.utr, "principal_paise": payload.principal_paise},
-        db=db,
-    )
-    return {"status": "MAKER_EXECUTED", "letter_id": id, "utr": payload.utr}
+    # Prototype mock support
+    if id == _MOCK_LETTER.id:
+        audit.log(
+            actor=current_user,
+            action="BANK_EXECUTION_MAKER_SUBMITTED",
+            entity_type="RELEASE_LETTER",
+            entity_id=id,
+            payload={"utr": payload.utr, "principal_paise": payload.principal_paise},
+            db=db,
+        )
+        return {"status": "MAKER_EXECUTED", "letter_id": id, "utr": payload.utr}
+
+    raise NotFoundError("Release letter", id)
 
 
 @router.post("/bank/letters/{id}/execute-checker")
@@ -805,27 +847,45 @@ def execute_checker(
     db: Session = Depends(get_db),
 ):
     """Bank Checker authorises remittance and closes FDR in bank CBS."""
-    if id != _MOCK_LETTER.id:
-        raise NotFoundError("Release letter", id)
+    db_letter = db.query(ReleaseLetter).filter(ReleaseLetter.id == id).first()
+    if db_letter:
+        return release_service.execute_letter_checker(
+            letter_id=id,
+            decision=payload.decision,
+            remarks=payload.remarks,
+            actor=current_user,
+            db=db,
+        )
 
-    audit.log(
-        actor=current_user,
-        action="BANK_EXECUTION_AUTHORISED",
-        entity_type="RELEASE_LETTER",
-        entity_id=id,
-        payload={"decision": payload.decision},
-        db=db,
-    )
-    return {"status": "CHECKER_CONFIRMED", "letter_id": id, "decision": payload.decision}
+    if id == _MOCK_LETTER.id:
+        audit.log(
+            actor=current_user,
+            action="BANK_EXECUTION_AUTHORISED",
+            entity_type="RELEASE_LETTER",
+            entity_id=id,
+            payload={"decision": payload.decision},
+            db=db,
+        )
+        return {"status": "CHECKER_CONFIRMED", "letter_id": id, "decision": payload.decision}
+
+    raise NotFoundError("Release letter", id)
 
 
-# ── Finance Settlement Endpoints (PR-8 preview) ────────────────────────────────
+# ── Finance Settlement Endpoints (SRS §7.2, FR-FIN-01..03) ─────────────────────
 
 @router.get("/finance/settlements", response_model=SettlementListResponse)
 def list_settlements(
     current_user: User = Depends(require_roles(Role.FINANCE_OFFICER, Role.SYSTEM_ADMIN)),
+    db: Session = Depends(get_db),
 ):
     """Finance Officer reconciliation dashboard."""
+    items = release_service.list_settlements(current_user, db)
+    if items:
+        return SettlementListResponse(
+            items=[SettlementOut(**s) for s in items],
+            total=len(items),
+        )
+
     return SettlementListResponse(
         items=[SettlementOut(**s) for s in _MOCK_SETTLEMENTS],
         total=len(_MOCK_SETTLEMENTS),
@@ -840,6 +900,23 @@ def confirm_settlement(
     db: Session = Depends(get_db),
 ):
     """Finance Officer confirms receipt of AICTE share and reconciles case."""
+    # Check if database settlement exists
+    db_settlement = (
+        db.query(Settlement)
+        .filter((Settlement.release_request_id == release_id) | (Settlement.id == release_id))
+        .first()
+    )
+    if db_settlement:
+        res = release_service.confirm_settlement(
+            release_id=release_id,
+            credited_paise=payload.credited_paise,
+            bank_ref=payload.bank_ref,
+            override_note=payload.override_note,
+            actor=current_user,
+            db=db,
+        )
+        return SettlementOut(**res)
+
     settlement = next((s for s in _MOCK_SETTLEMENTS if s["release_request_id"] == release_id), None)
     if not settlement:
         raise NotFoundError("Settlement record", release_id)
