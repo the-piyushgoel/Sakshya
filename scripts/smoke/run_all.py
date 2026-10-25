@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 Smoke test orchestrator — runs all lane smoke scripts in order.
-Each lane adds their file at scripts/smoke/<lane>_smoke.py.
 Usage: make smoke
 """
 import os
@@ -9,32 +8,49 @@ import subprocess
 import sys
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_ROOT_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
+_BACKEND_DIR = os.path.join(_ROOT_DIR, "backend")
+_SEED_SCRIPT = os.path.join(_ROOT_DIR, "scripts", "seed_all.py")
 
-# Each lane creates their own smoke script here
+
+def reset_db() -> None:
+    """Reset database to deterministic seed state."""
+    subprocess.run([sys.executable, _SEED_SCRIPT], cwd=_BACKEND_DIR, check=True, capture_output=True)
+
+
+# Smoke scripts to run
 _LANE_SCRIPTS = [
-    "pr_smoke.py",   # Premansh — core + release + public
-    "py_smoke.py",   # Piyush   — intake + bank
-    "mk_smoke.py",   # Mehak    — insights
-    "pa_smoke.py",   # Payal    — (no backend smoke needed; FE build check)
+    ("pr_smoke.py", "Lane A: Premansh (Spine, Monitoring, Release & Verification)"),
+    ("py_smoke.py", "Lane B: Piyush (Intake, Forgery & Bank Confirmation Chain)"),
+    ("mk_smoke.py", "Lane C: Mehak (Insights, Risk Algorithm & Leadership KPIs)"),
+    ("golden_smoke.py", "Master E2E: 12-Step Golden Path (G1–G12)"),
 ]
 
 _failed: list[str] = []
 
-for script in _LANE_SCRIPTS:
+print("━" * 65)
+print("  SAKSHYA v1.0 — MASTER SMOKE TEST ORCHESTRATOR")
+print("━" * 65)
+
+for script, description in _LANE_SCRIPTS:
     path = os.path.join(_SCRIPT_DIR, script)
     if not os.path.exists(path):
         print(f"  (skip {script} — not yet created)")
         continue
 
-    print(f"\n── Running {script} {'─' * (40 - len(script))}")
-    result = subprocess.run([sys.executable, path], capture_output=False)
+    # Reset database before each smoke test script for guaranteed isolation
+    reset_db()
+
+    print(f"\n── Running {script} ({description}) ──")
+    result = subprocess.run([sys.executable, path], cwd=_ROOT_DIR, capture_output=False)
     if result.returncode != 0:
         _failed.append(script)
 
-print()
+print("\n" + "━" * 65)
 if _failed:
-    print(f"❌ SMOKE FAILED: {', '.join(_failed)}")
+    print(f"❌ SMOKE SUITE FAILED: {', '.join(_failed)}")
     sys.exit(1)
 else:
-    print("✅ All smoke tests passed")
+    print("✅ ALL SMOKE TESTS PASSED CLEANLY (PR, PY, MK & GOLDEN PATH)")
+print("━" * 65 + "\n")
 

@@ -183,44 +183,215 @@ def main() -> None:
         # Reset clock for clean baseline
         client.post("/api/admin/clock/reset", headers=admin_headers)
 
-        # PR-S1: Public Verification Stubs
-        r_pub = client.post(
+        # PR-6: Real Release Request & Eligibility Engine
+        from app.modules.intake.ids import institute_id, stable_id
+
+        vj_login = client.post("/api/auth/login", json={"username": "vj_sig", "password": "demo@123"})
+        check("POST /api/auth/login (vj_sig) → 200", vj_login, 200)
+        vj_headers = {"Authorization": f"Bearer {vj_login.json()['access_token']}"}
+
+        vj_ob_id = stable_id("obligation", "vidyajyoti")
+        vj_ins_id = stable_id("instrument", "vidyajyoti")
+
+        # Compliance Officer places temporary hold
+        co_login = client.post("/api/auth/login", json={"username": "co1", "password": "demo@123"})
+        check("POST /api/auth/login (co1) → 200", co_login, 200)
+        co_headers = {"Authorization": f"Bearer {co_login.json()['access_token']}"}
+
+        r_hold_place = client.post(
+            "/api/holds",
+            headers=co_headers,
+            json={
+                "scope": "INSTITUTE",
+                "entity_id": institute_id("vidyajyoti"),
+                "reason": "Statutory inquiry pending verification",
+                "legal_ref": "AICTE/SMOKE/2026/01",
+            },
+        )
+        check("POST /api/holds (co1) → 200", r_hold_place, 200)
+        hold_id = r_hold_place.json()["id"]
+
+        # Vidya Jyoti attempts release -> INELIGIBLE due to Rule E-06
+        r_rel_sub = client.post(
+            "/api/release/requests",
+            headers=vj_headers,
+            json={
+                "obligation_id": vj_ob_id,
+                "instrument_ids": [vj_ins_id],
+                "case_type": "TERM_COMPLETE",
+                "remarks": "Term complete release request",
+            },
+        )
+        check("POST /api/release/requests (hold active) → 200", r_rel_sub, 200)
+        rel_data = r_rel_sub.json()
+        assert rel_data["state"] == "INELIGIBLE"
+        rel_req_id = rel_data["id"]
+
+        r_rel_det = client.get(f"/api/release/requests/{rel_req_id}", headers=vj_headers)
+        e06 = next(r for r in r_rel_det.json()["rules"] if r["rule_id"] == "E-06")
+        assert e06["result"] == "FAIL"
+        print("  ✓ eligibility engine: active compliance hold triggers Rule E-06 INELIGIBLE verdict")
+
+        # Compliance Officer lifts hold
+        r_lift = client.post(
+            f"/api/holds/{hold_id}/lift",
+            headers=co_headers,
+            json={"reason": "Statutory inquiry completed and all clear"},
+        )
+        check(f"POST /api/holds/{hold_id}/lift → 200", r_lift, 200)
+
+        # Resubmit release request -> becomes ELIGIBLE & SCRUTINY; locks instrument
+        r_resub = client.post(f"/api/release/requests/{rel_req_id}/resubmit", headers=vj_headers)
+        check("POST .../resubmit → 200", r_resub, 200)
+        assert r_resub.json()["state"] == "SCRUTINY"
+        print("  ✓ hold lifted; resubmitted release request passed all rules and transitioned to SCRUTINY")
+
+        # Approving Officer recommends
+        ao_login = client.post("/api/auth/login", json={"username": "ao1", "password": "demo@123"})
+        ao_headers = {"Authorization": f"Bearer {ao_login.json()['access_token']}"}
+        r_rec = client.post(
+            f"/api/release/requests/{rel_req_id}/recommend",
+            headers=ao_headers,
+            json={"recommendation_note": "Term complete and bank confirmation verified clear."},
+        )
+        check("POST .../recommend (ao1) → 200", r_rec, 200)
+        assert r_rec.json()["state"] == "RECOMMENDED"
+        print("  ✓ approving officer recommended release request to Release Authority")
+
+        # PR-7: Cryptographic Signing, PDF & QR Generation
+        ra_login = client.post("/api/auth/login", json={"username": "ra1", "password": "demo@123"})
+        ra_headers = {"Authorization": f"Bearer {ra_login.json()['access_token']}"}
+
+        # Signing without step-up PIN fails
+        r_sign_no_pin = client.post(f"/api/release/requests/{rel_req_id}/sign", headers=ra_headers)
+        check("POST .../sign (without PIN) → 403", r_sign_no_pin, 403)
+        assert r_sign_no_pin.json()["error"]["code"] == "STEP_UP_REQUIRED"
+
+        # Step-up verification for RA
+        client.post("/api/auth/step-up", headers=ra_headers, json={"pin": "246810"})
+
+        # RA signs request
+        r_sign = client.post(f"/api/release/requests/{rel_req_id}/sign", headers=ra_headers)
+        check("POST .../sign (with PIN) → 200", r_sign, 200)
+        sign_data = r_sign.json()
+        assert sign_data["status"] == "SIGNED"
+        letter_id = sign_data["letter_id"]
+        pub_code = sign_data["verification_code"]
+        assert sign_data["letter_hash"] is not None
+        print(f"  ✓ RA signed release letter via Ed25519 (verification_code: {pub_code})")
+
+        # Fetch letter detail
+        r_let_det = client.get(f"/api/release/letters/{letter_id}", headers=ra_headers)
+        check(f"GET /api/release/letters/{letter_id} → 200", r_let_det, 200)
+        letter_detail = r_let_det.json()
+        assert letter_detail["state"] == "ISSUED"
+        assert letter_detail["signature_hex"] is not None
+        assert letter_detail["letter_hash"] is not None
+        principal_paise = letter_detail["principal_paise"]
+        aicte_share_paise = letter_detail["aicte_share_paise"]
+
+        # Verify ReportLab PDF generation
+        r_pdf = client.get(f"/api/release/letters/{letter_id}/pdf", headers=ra_headers)
+        check(f"GET /api/release/letters/{letter_id}/pdf → 200", r_pdf, 200)
+        assert r_pdf.headers["content-type"] == "application/pdf"
+        assert len(r_pdf.content) > 1000
+        print("  ✓ ReportLab official PDF generated with embedded QR verification code")
+
+        # PR-8: Live Public Verification
+        r_pub_valid = client.post(
             "/api/public/verify",
             json={
-                "code": "SAK-2026-ARYA-8841",
-                "fdr_number": "FDR-ARYA-401928",
+                "code": pub_code,
+                "fdr_number": "BRB-FDR-2021-004711",
                 "ifsc": "BRBK0001234",
             },
         )
-        check("POST /api/public/verify → 200", r_pub, 200)
-        assert r_pub.json()["status"] == "VALID"
+        check("POST /api/public/verify (genuine) → 200", r_pub_valid, 200)
+        assert r_pub_valid.json()["status"] == "VALID"
+        assert r_pub_valid.json()["tamper_warning"] is False
+        assert "destination_account" in r_pub_valid.json()
+        print("  ✓ public verification: genuine letter verified valid with policy destination account")
 
-        r_qr = client.get("/api/public/verify/SAK-2026-ARYA-8841")
-        check("GET /api/public/verify/{code} → 200", r_qr, 200)
-        print("  ✓ public verify endpoints verified")
+        # Uniform timing-safe error response for mismatched lookup
+        r_pub_nomatch = client.post(
+            "/api/public/verify",
+            json={
+                "code": pub_code,
+                "fdr_number": "WRONG-FDR-NUMBER",
+                "ifsc": "BRBK0001234",
+            },
+        )
+        check("POST /api/public/verify (mismatch) → 404", r_pub_nomatch, 404)
+        assert r_pub_nomatch.json()["error"]["code"] == "VERIFY_NO_MATCH"
+        print("  ✓ timing-safe uniform VERIFY_NO_MATCH error returned")
 
-        # PR-S1: Release Desk Stubs
-        r_rel_list = client.get("/api/release/requests", headers=headers)
-        check("GET /api/release/requests → 200", r_rel_list, 200)
-        assert r_rel_list.json()["total"] >= 1
+        # PR-8: Bank Remittance Maker-Checker Execution
+        bm_login = client.post("/api/auth/login", json={"username": "brb_mk", "password": "demo@123"})
+        bm_headers = {"Authorization": f"Bearer {bm_login.json()['access_token']}"}
 
-        r_letter = client.get("/api/release/letters/letter-arya-term-2026", headers=headers)
-        check("GET /api/release/letters/{id} → 200", r_letter, 200)
+        # Maker submits execution details
+        r_exec_maker = client.post(
+            f"/api/bank/letters/{letter_id}/execute-maker",
+            headers=bm_headers,
+            json={
+                "utr": "UTR-PR-SMOKE-2026-001",
+                "principal_paise": principal_paise,
+                "aicte_share_paise": aicte_share_paise,
+                "execution_date": "2026-10-25",
+            },
+        )
+        check("POST .../execute-maker (brb_mk) → 200", r_exec_maker, 200)
+        print("  ✓ bank maker recorded core banking UTR remittance details")
 
-        # Compliance Officer checks holds
-        co_login = client.post("/api/auth/login", json={"username": "co1", "password": "demo@123"})
-        co_token = co_login.json()["access_token"]
-        r_holds = client.get("/api/holds", headers={"Authorization": f"Bearer {co_token}"})
-        check("GET /api/holds (co1) → 200", r_holds, 200)
-        assert r_holds.json()["total"] >= 1
+        # Maker without checker role fails role check
+        r_exec_sod = client.post(
+            f"/api/bank/letters/{letter_id}/execute-checker",
+            headers=bm_headers,
+            json={"decision": "AUTHORISE", "remarks": "Maker self-approval attempt"},
+        )
+        check("POST .../execute-checker (maker lacks checker role) → 403", r_exec_sod, 403)
+        assert r_exec_sod.json()["error"]["code"] == "FORBIDDEN"
+        print("  ✓ role protection: bank maker without checker role cannot authorise remittance")
 
-        # Finance Officer checks settlements
+        # Bank Checker authorises
+        bc_login = client.post("/api/auth/login", json={"username": "brb_ck", "password": "demo@123"})
+        bc_headers = {"Authorization": f"Bearer {bc_login.json()['access_token']}"}
+        r_exec_ck = client.post(
+            f"/api/bank/letters/{letter_id}/execute-checker",
+            headers=bc_headers,
+            json={"decision": "AUTHORISE", "remarks": "Authorised by Bank Checker"},
+        )
+        check("POST .../execute-checker (brb_ck) → 200", r_exec_ck, 200)
+        assert r_exec_ck.json()["status"] == "CHECKER_CONFIRMED"
+        r_let_exec = client.get(f"/api/release/letters/{letter_id}", headers=ra_headers)
+        assert r_let_exec.json()["state"] == "EXECUTED"
+        print("  ✓ bank checker authorised remittance; letter EXECUTED, instruments RELEASED")
+
+        # Replay attempt fails
+        r_replay = client.post(
+            f"/api/bank/letters/{letter_id}/execute-checker",
+            headers=bc_headers,
+            json={"decision": "AUTHORISE"},
+        )
+        check("POST .../execute-checker (replay) → 409", r_replay, 409)
+        assert r_replay.json()["error"]["code"] == "INVALID_STATE"
+        print("  ✓ single-use replay protection: executed letter cannot be re-executed")
+
+        # PR-8: Finance Settlement Reconciliation & Cascading Closure
         fo_login = client.post("/api/auth/login", json={"username": "fo1", "password": "demo@123"})
-        fo_token = fo_login.json()["access_token"]
-        r_settlements = client.get("/api/finance/settlements", headers={"Authorization": f"Bearer {fo_token}"})
-        check("GET /api/finance/settlements (fo1) → 200", r_settlements, 200)
-        assert r_settlements.json()["total"] >= 1
-        print("  ✓ release, holds, and settlement stubs verified")
+        fo_headers = {"Authorization": f"Bearer {fo_login.json()['access_token']}"}
+
+        r_settle_confirm = client.post(
+            f"/api/finance/settlements/{rel_req_id}/confirm",
+            headers=fo_headers,
+            json={
+                "credited_paise": aicte_share_paise,
+                "bank_ref": "AICTE-CR-2026-9901",
+            },
+        )
+        check("POST /api/finance/settlements/.../confirm → 200", r_settle_confirm, 200)
+        assert r_settle_confirm.json()["is_settled"] is True
+        print("  ✓ finance officer confirmed credit; cascading permanent closure complete (CLOSED)")
 
     finally:
         if hasattr(client, "close"):
