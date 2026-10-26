@@ -301,6 +301,8 @@ export function SubmitFdrPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToasts();
+  const obligationsQuery = useObligations();
+  const obligations = obligationsQuery.data ?? [];
   const [step, setStep] = useState(0);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<JsonObject | null>(null);
@@ -336,9 +338,20 @@ export function SubmitFdrPage() {
       if (!file || !preview) throw new Error(t('institute.previewRequired'));
       if (fieldSpecs.some((spec) => spec.required && !fieldValues[spec.key]?.trim())) throw new Error(t('institute.requiredField'));
       if (!/^\d+$/.test(fieldValues.principal_paise ?? '') || Number(fieldValues.principal_paise) <= 0) throw new Error(t('institute.invalidAmount'));
+      let obligationId = obligations[0]?.id;
+      if (!obligationId) {
+        const obs = asList<Obligation>(await api.get<unknown>('/obligations'));
+        obligationId = obs[0]?.id;
+      }
+      if (!obligationId) throw new Error('No obligation found for this institute');
       const data = new FormData();
       data.append('file', file);
-      for (const [key, value] of Object.entries(fieldValues)) data.append(key, value);
+      data.append('obligation_id', obligationId);
+      for (const [key, value] of Object.entries(fieldValues)) {
+        if (key !== 'favouring') {
+          data.append(key, value);
+        }
+      }
       return apiRequest<JsonObject>('/instruments', { method: 'POST', body: data });
     },
     onSuccess: async (result) => {
