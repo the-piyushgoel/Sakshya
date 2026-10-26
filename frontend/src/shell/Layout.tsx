@@ -127,7 +127,21 @@ export function AppShell({ navItems }: { navItems: FeatureNavItem[] }) {
         </NavLink>
       ) : sections.map((section) => (
         <div className="nav-section" key={section}>
-          <div className="sidebar-label">{t(section === 'support' ? 'nav.supportSection' : section === 'release' ? 'nav.releaseSection' : section === 'finance' ? 'nav.financeSection' : 'nav.instituteSection')}</div>
+          <div className="sidebar-label">
+            {section === 'support'
+              ? t('nav.supportSection')
+              : section === 'release'
+                ? t('nav.releaseSection')
+                : section === 'finance'
+                  ? t('nav.financeSection')
+                  : section === 'officer'
+                    ? t('nav.officerSection')
+                    : section === 'bank'
+                      ? t('nav.bankSection')
+                      : section === 'dashboard'
+                        ? t('nav.dashboardSection')
+                        : t('nav.instituteSection')}
+          </div>
           {navItems.filter((item) => (item.section ?? 'institute') === section).map((item) => {
             const Icon = item.icon ? navIcons[item.icon] : ListTodo;
             const [itemPath, itemHash] = item.path.split('#');

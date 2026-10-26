@@ -8,7 +8,16 @@ import { UiKitPage } from './UiKitPage';
 
 export default function App() {
   const { user, loading, authBypassed } = useAuth();
-  const landingPath = authBypassed ? '/institute' : '/ui-kit';
+  const landingPath = useMemo(() => {
+    if (!user) return authBypassed ? '/institute' : '/ui-kit';
+    if (user.roles.includes('LEADERSHIP')) return '/dashboard';
+    if (user.roles.includes('SCRUTINY_OFFICER') || user.roles.includes('APPROVING_OFFICER')) return '/officer';
+    if (user.roles.includes('BANK_MAKER') || user.roles.includes('BANK_CHECKER')) return '/bank';
+    if (user.roles.includes('RELEASE_AUTHORITY')) return '/release-desk';
+    if (user.roles.includes('FINANCE_OFFICER')) return '/finance/settlements';
+    if (user.roles.includes('SYSTEM_ADMIN')) return '/dashboard';
+    return '/institute';
+  }, [user, authBypassed]);
   const navItems = useMemo(
     () => featureNavItems.filter((item) => !item.roles || item.roles.some((role) => user?.roles.includes(role))),
     [user],
