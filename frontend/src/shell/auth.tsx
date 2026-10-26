@@ -7,38 +7,20 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { api, ApiError, getAccessToken, setAccessToken } from '../api/client';
 import type { AuthResponse, DemoUser, User } from '../api/types';
 
-const AUTH_BYPASS = import.meta.env.DEV && import.meta.env.VITE_AUTH_BYPASS !== 'false';
-
-const previewUsers: DemoUser[] = [
-  { username: 'preview_signatory', display_name: 'Institute Signatory', roles: ['INS_SIGNATORY'] },
-  { username: 'preview_institute_admin', display_name: 'Institute Admin', roles: ['INS_ADMIN'] },
-  { username: 'preview_scrutiny', display_name: 'Scrutiny Officer', roles: ['SCRUTINY_OFFICER'] },
-  { username: 'preview_approver', display_name: 'Approving Officer', roles: ['APPROVING_OFFICER'] },
-  { username: 'preview_release', display_name: 'Release Authority', roles: ['RELEASE_AUTHORITY'] },
-  { username: 'preview_finance', display_name: 'Finance Officer', roles: ['FINANCE_OFFICER'] },
-  { username: 'preview_compliance', display_name: 'Compliance Officer', roles: ['COMPLIANCE_OFFICER'] },
-  { username: 'preview_leadership', display_name: 'Leadership', roles: ['LEADERSHIP'] },
-  { username: 'preview_auditor', display_name: 'Auditor', roles: ['AUDITOR'] },
-  { username: 'preview_admin', display_name: 'System Admin', roles: ['SYSTEM_ADMIN'] },
-  { username: 'preview_bank_maker', display_name: 'Bank Maker', roles: ['BANK_MAKER'] },
-  { username: 'preview_bank_checker', display_name: 'Bank Checker', roles: ['BANK_CHECKER'] },
-];
-
-const previewUser: User = {
-  id: 'preview-user',
-  username: 'preview_signatory',
-  display_name: 'Institute Signatory',
-  roles: ['INS_SIGNATORY'],
-};
+const AUTH_BYPASS = import.meta.env.DEV && import.meta.env.VITE_AUTH_BYPASS === 'true';
+const DEFAULT_DEMO_USERNAME = 'ar_sig';
+const DEFAULT_DEMO_PASSWORD = 'demo@123';
 
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
   authBypassed: boolean;
   login: (username: string, password: string) => Promise<void>;
+  signup: (username: string, displayName: string, password: string) => Promise<void>;
   logout: () => void;
   demoUsers: DemoUser[];
   demoUsersError: string | null;
@@ -59,16 +41,13 @@ function normalizeDemoUsers(data: unknown): DemoUser[] {
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(AUTH_BYPASS ? previewUser : null);
-  const [loading, setLoading] = useState(!AUTH_BYPASS && Boolean(getAccessToken()));
-  const [demoUsers, setDemoUsers] = useState<DemoUser[]>(AUTH_BYPASS ? previewUsers : []);
+  const queryClient = useQueryClient();
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(AUTH_BYPASS || Boolean(getAccessToken()));
+  const [demoUsers, setDemoUsers] = useState<DemoUser[]>([]);
   const [demoUsersError, setDemoUsersError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (AUTH_BYPASS) {
-      setAccessToken(null);
-      return;
-    }
     let active = true;
     api.get<unknown>('/demo/users')
       .then((data) => {
@@ -85,7 +64,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (AUTH_BYPASS) return;
+    if (AUTH_BYPASS) {
+      let active = true;
+      setAccessToken(null);
+      api.post<AuthResponse>('/auth/login', {
+        username: DEFAULT_DEMO_USERNAME,
+        password: DEFAULT_DEMO_PASSWORD,
+      })
+        .then(async (result) => {
+          if (!result.access_token) {
+            throw new ApiError('Login response did not include an access token', 'INVALID_RESPONSE', 502);
+          }
+          if (active) {
+            setAccessToken(result.access_token);
+            setUser(result.user ?? await api.get<User>('/me'));
+          }
+        })
+        .catch((error: unknown) => {
+          if (active) setDemoUsersError(error instanceof Error ? error.message : 'Could not start the demo session');
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
+      return () => {
+        active = false;
+      };
+    }
     if (!getAccessToken()) return;
     let active = true;
     api.get<User>('/me')
@@ -107,40 +111,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {
-    if (AUTH_BYPASS) {
-      const selectedUser = previewUsers.find((candidate) => candidate.username === username);
-      if (!selectedUser?.roles?.length) {
-        throw new Error('Choose a preview role to continue.');
-      }
-      setUser({
-        id: `preview-${selectedUser.username}`,
-        username: selectedUser.username,
-        display_name: selectedUser.display_name,
-        roles: selectedUser.roles,
-      });
-      return;
+    const selectedDemoUser = AUTH_BYPASS && !password
+      ? demoUsers.find((candidate) => candidate.username === username)
+      : undefined;
+    if (AUTH_BYPASS && !password && !selectedDemoUser) {
+      throw new Error('Choose an available seeded account to start the demo session.');
     }
-    const result = await api.post<AuthResponse>('/auth/login', { username, password });
+    const result = await api.post<AuthResponse>('/auth/login', {
+      username,
+      password: selectedDemoUser ? DEFAULT_DEMO_PASSWORD : password,
+    });
     if (!result.access_token) {
       throw new ApiError('Login response did not include an access token', 'INVALID_RESPONSE', 502);
     }
+    // A previous institute's records must not remain visible after a user switch.
+    queryClient.clear();
     setAccessToken(result.access_token);
     const currentUser = result.user ?? await api.get<User>('/me');
     setUser(currentUser);
-  }, []);
+  }, [demoUsers, queryClient]);
+
+  const signup = useCallback(async (username: string, displayName: string, password: string) => {
+    const result = await api.post<AuthResponse>('/auth/signup', {
+      username,
+      display_name: displayName,
+      password,
+    });
+    if (!result.access_token) {
+      throw new ApiError('Signup response did not include an access token', 'INVALID_RESPONSE', 502);
+    }
+    queryClient.clear();
+    setAccessToken(result.access_token);
+    const currentUser = result.user ?? await api.get<User>('/me');
+    setUser(currentUser);
+  }, [queryClient]);
 
   const logout = useCallback(() => {
-    if (AUTH_BYPASS) {
-      setUser(previewUser);
-      return;
-    }
+    queryClient.clear();
     setAccessToken(null);
     setUser(null);
-  }, []);
+  }, [queryClient]);
 
   const value = useMemo(
-    () => ({ user, loading, authBypassed: AUTH_BYPASS, login, logout, demoUsers, demoUsersError }),
-    [user, loading, login, logout, demoUsers, demoUsersError],
+    () => ({ user, loading, authBypassed: AUTH_BYPASS, login, signup, logout, demoUsers, demoUsersError }),
+    [user, loading, login, signup, logout, demoUsers, demoUsersError],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

@@ -5,11 +5,19 @@ All modules import Base from here and define their models.
 schema change? → tell team "SCHEMA CHANGE: <table>" → make reset.
 """
 import os
+from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./data/sakshya.db")
+_BACKEND_DIR = Path(__file__).resolve().parents[2]
+# Resolve the development database relative to the backend package, not the
+# shell's current directory. This makes records survive server restarts whether
+# Uvicorn is launched from the repository root or from `backend/`.
+DATABASE_URL: str = os.getenv(
+    "DATABASE_URL",
+    f"sqlite:///{(_BACKEND_DIR / 'data' / 'sakshya.db').as_posix()}",
+)
 
 _connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 _engine_kwargs = {"connect_args": _connect_args}

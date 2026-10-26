@@ -48,6 +48,7 @@ def submit(username: str, sample: str, obligation: str | None = None):
             "bank_ifsc": "BRBK0001234",
             "principal_paise": "250000000", "issue_date": "2024-01-15",
             "maturity_date": "2027-01-15", "interest_rate_pct": "7.25",
+            "favouring": "Member Secretary, AICTE",
             "holder_names": "Aryabhatta Trust; Aryabhatta Education Society",
         },
     )
@@ -59,6 +60,7 @@ def test_genuine_submission_persists_fields_file_and_transitions():
     detail = response.json()
     assert detail["state"] == InstrumentState.SCRUTINY.value
     assert len(detail["fields"]) >= 7
+    assert any(field["name"] == "favouring" and field["value"] == "Member Secretary, AICTE" for field in detail["fields"])
     assert all(field["trust"] == TrustLevel.L0_CLAIMED.value for field in detail["fields"])
     assert not any(d["severity"] == Severity.HIGH.value for d in detail["discrepancies"]), detail["discrepancies"]
     db = SessionLocal()

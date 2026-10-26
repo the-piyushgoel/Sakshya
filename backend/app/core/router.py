@@ -29,18 +29,20 @@ Endpoints:
 from datetime import timedelta
 import os
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core import audit, clock, jobs, notify, policy
 from app.core.db import get_db
 from app.core.deps import get_current_user, require_roles
 from app.core.enums import Role
-from app.core.errors import NotFoundError, UnauthenticatedError, ValidationError
+from app.core.errors import InvalidStateError, NotFoundError, UnauthenticatedError, ValidationError
 from app.core.models import User
-from app.core.security import create_access_token, verify_password
+from app.core.security import create_access_token, hash_password, verify_password
 
 router = APIRouter(tags=["core"])
 
@@ -53,6 +55,27 @@ STEP_UP_TTL_MINUTES: int = 5
 class LoginRequest(BaseModel):
     username: str = Field(..., description="Username")
     password: str = Field(..., description="Password")
+
+
+class SignupRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    display_name: str = Field(..., min_length=1, max_length=128)
+    password: str = Field(..., min_length=8, max_length=72)
+
+    @field_validator("display_name")
+    @classmethod
+    def display_name_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Display name must not be blank")
+        return value
+
+    @field_validator("password")
+    @classmethod
+    def password_must_fit_bcrypt(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError("Password must be no more than 72 bytes")
+        return value
 
 
 class UserOut(BaseModel):
@@ -189,10 +212,54 @@ class NotificationReadResponse(BaseModel):
 
 # ── Authentication & User Endpoints ───────────────────────────────────────────
 
+@router.post("/auth/signup", response_model=AuthResponse, status_code=201)
+def signup(payload: SignupRequest, db: Session = Depends(get_db)):
+    """Create a least-privilege institute signatory account and sign it in."""
+    username = payload.username.lower()
+    if db.query(User).filter(User.username == username).first():
+        raise InvalidStateError("Username is already taken")
+
+    user = User(
+        id=str(uuid4()),
+        username=username,
+        password_hash=hash_password(payload.password),
+        display_name=payload.display_name,
+        roles_json=[Role.INS_SIGNATORY.value],
+    )
+    db.add(user)
+    audit.log(
+        actor=user,
+        action="USER_SIGNED_UP",
+        entity_type="USER",
+        entity_id=user.id,
+        payload={"username": username},
+        db=db,
+    )
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if db.query(User).filter(User.username == username).first():
+            raise InvalidStateError("Username is already taken") from exc
+        raise
+
+    return AuthResponse(
+        access_token=create_access_token(user),
+        user=UserOut(
+            id=user.id,
+            username=user.username,
+            display_name=user.display_name,
+            roles=user.roles,
+            institute_id=user.institute_id,
+            bank_id=user.bank_id,
+        ),
+    )
+
+
 @router.post("/auth/login", response_model=AuthResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
     """Authenticate with username + password to receive a JWT access token."""
-    user = db.query(User).filter(User.username == payload.username.strip()).first()
+    user = db.query(User).filter(User.username == payload.username.strip().lower()).first()
     if not user or not verify_password(payload.password, user.password_hash):
         raise UnauthenticatedError("Invalid username or password")
 

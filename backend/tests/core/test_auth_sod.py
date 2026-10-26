@@ -15,6 +15,7 @@ from app.core.enums import Role
 from app.core.errors import SodViolationError
 from app.core.models import User
 from app.core.seed import seed as seed_core
+from app.core.security import verify_password
 from app.core.sod import ensure_different
 from app.main import app
 
@@ -72,6 +73,63 @@ def test_login_success_and_failure():
     unknown_res = client.post("/api/auth/login", json={"username": "nonexistent", "password": "demo@123"})
     assert unknown_res.status_code == 401
     assert unknown_res.json()["error"]["code"] == "UNAUTHENTICATED"
+
+
+def test_signup_creates_account_and_authenticates():
+    """New accounts are persisted with a hashed password and restricted role."""
+    res = client.post(
+        "/api/auth/signup",
+        json={
+            "username": "New_Institute_User",
+            "display_name": "New Institute User",
+            "password": "a-secure-password",
+        },
+    )
+    assert res.status_code == 201
+    data = res.json()
+    assert data["token_type"] == "bearer"
+    assert data["user"]["username"] == "new_institute_user"
+    assert data["user"]["roles"] == ["INS_SIGNATORY"]
+    assert data["user"]["institute_id"] is None
+
+    session = SessionLocal()
+    try:
+        user = session.query(User).filter(User.username == "new_institute_user").one()
+        assert user.password_hash != "a-secure-password"
+        assert verify_password("a-secure-password", user.password_hash)
+
+        login_res = client.post(
+            "/api/auth/login",
+            json={"username": "NEW_INSTITUTE_USER", "password": "a-secure-password"},
+        )
+        assert login_res.status_code == 200
+        token = login_res.json()["access_token"]
+        profile_res = client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
+        assert profile_res.status_code == 200
+        assert profile_res.json()["username"] == "new_institute_user"
+    finally:
+        created_user = session.query(User).filter(User.username == "new_institute_user").first()
+        if created_user:
+            session.delete(created_user)
+            session.commit()
+        session.close()
+
+
+def test_signup_rejects_duplicate_username_and_weak_password():
+    payload = {
+        "username": "AR_SIG",
+        "display_name": "Duplicate Account",
+        "password": "a-secure-password",
+    }
+    duplicate = client.post("/api/auth/signup", json=payload)
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "INVALID_STATE"
+
+    weak = client.post(
+        "/api/auth/signup",
+        json={**payload, "username": "another_user", "password": "short"},
+    )
+    assert weak.status_code == 422
 
 
 def test_get_me():

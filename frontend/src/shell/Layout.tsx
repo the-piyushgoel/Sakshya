@@ -5,7 +5,6 @@ import {
   ChevronDown,
   CircleUserRound,
   Clock3,
-  FileText,
   GitBranch,
   Grid2X2,
   Landmark,
@@ -15,7 +14,6 @@ import {
   ScrollText,
   ShieldCheck,
   Sun,
-  TriangleAlert,
   X,
   type LucideIcon,
 } from 'lucide-react';
@@ -36,8 +34,6 @@ const navIcons: Record<NonNullable<FeatureNavItem['icon']>, LucideIcon> = {
   register: ScrollText,
   bank: Building2,
   release: Landmark,
-  discrepancies: TriangleAlert,
-  documents: FileText,
   audit: GitBranch,
   verify: ShieldCheck,
 };
@@ -65,20 +61,6 @@ export function AppShell({ navItems }: { navItems: FeatureNavItem[] }) {
     queryFn: () => api.get<NotificationItem[] | { items: NotificationItem[] }>('/notifications'),
     retry: false,
   });
-  const instrumentQuery = useQuery({
-    queryKey: ['institute', 'instruments'],
-    queryFn: async () => {
-      const response = await api.get<unknown>('/instruments');
-      if (Array.isArray(response)) return response;
-      if (typeof response === 'object' && response !== null && 'items' in response && Array.isArray(response.items)) {
-        return response.items;
-      }
-      throw new Error('Instrument list response has an unexpected shape.');
-    },
-    retry: false,
-    enabled: user?.roles.some((role) => role === 'INS_SIGNATORY' || role === 'INS_ADMIN') ?? false,
-  });
-
   useEffect(() => {
     setMobileNavOpen(false);
   }, [location.pathname]);
@@ -87,15 +69,6 @@ export function AppShell({ navItems }: { navItems: FeatureNavItem[] }) {
     ? notificationQuery.data
     : notificationQuery.data?.items ?? [];
   const unreadCount = notifications.filter((item) => !item.read).length;
-  const discrepancyCount = instrumentQuery.data?.reduce<number>((count, value) => {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return count;
-    const instrument = value as { state?: unknown; discrepancies?: unknown };
-    if (Array.isArray(instrument.discrepancies)) {
-      const open = instrument.discrepancies.filter((entry) => typeof entry !== 'object' || entry === null || !('status' in entry) || entry.status === 'OPEN').length;
-      return count + (open || (instrument.state === 'DISCREPANCY' ? 1 : 0));
-    }
-    return count + (instrument.state === 'DISCREPANCY' ? 1 : 0);
-  }, 0) ?? 0;
   const simulatedTime = clockQuery.data?.now ?? clockQuery.data?.current_time ?? clockQuery.data?.simulated_at;
 
   const selectUser = async () => {
@@ -136,17 +109,10 @@ export function AppShell({ navItems }: { navItems: FeatureNavItem[] }) {
               : itemPath === '/institute'
                 ? location.pathname === itemPath && !location.hash
                 : location.pathname === itemPath || location.pathname.startsWith(`${itemPath}/`);
-            return item.disabled ? (
-              <div key={`${item.label}-${item.path}`} className="nav-link nav-link-disabled" aria-disabled="true" title={t('nav.notAvailableYet')}>
-                <span className="nav-icon"><Icon size={15} strokeWidth={1.7} /></span>
-                <span>{translateText(item.label)}</span>
-                {item.label === 'Discrepancies' && discrepancyCount > 0 && <span className="sidebar-nav-badge">{discrepancyCount}</span>}
-              </div>
-            ) : (
+            return (
               <NavLink key={`${item.label}-${item.path}`} to={item.path} end={item.path === '/institute'} className={navClass(active)}>
                 <span className="nav-icon"><Icon size={15} strokeWidth={1.7} /></span>
                 <span>{translateText(item.label)}</span>
-                {item.label === 'Discrepancies' && discrepancyCount > 0 && <span className="sidebar-nav-badge">{discrepancyCount}</span>}
               </NavLink>
             );
           })}
@@ -192,7 +158,7 @@ export function AppShell({ navItems }: { navItems: FeatureNavItem[] }) {
               <Landmark size={16} className="text-slate-400" />
               <span>{t('nav.aictePortal')}</span>
               <span className="text-slate-300">/</span>
-              <span className="truncate font-semibold text-navy-800">{translateText(navItems.find((item) => !item.disabled && (location.pathname === item.path.split('#')[0] || location.pathname.startsWith(`${item.path.split('#')[0]}/`)))?.label ?? t('nav.designSystem'))}</span>
+              <span className="truncate font-semibold text-navy-800">{translateText(navItems.find((item) => location.pathname === item.path.split('#')[0] || location.pathname.startsWith(`${item.path.split('#')[0]}/`))?.label ?? t('nav.designSystem'))}</span>
             </div>
             <span className="sm:hidden text-sm font-semibold text-navy-800">{t('nav.portal')}</span>
           </div>

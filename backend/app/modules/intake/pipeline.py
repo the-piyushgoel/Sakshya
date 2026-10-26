@@ -41,10 +41,17 @@ def submit_instrument(
     obligation = service.get_obligation(obligation_id, db)
     if not obligation or obligation.institute_id != institute_id:
         raise NotFoundError("Obligation", obligation_id)
-    prefix = entered["bank_ifsc"][:4].upper()
+    # OCR/manual input can contain whitespace or lower-case characters. Store a
+    # canonical IFSC before selecting the authorised bank directory entry.
+    entered["bank_ifsc"] = str(entered["bank_ifsc"]).strip().upper()
+    prefix = entered["bank_ifsc"][:4]
     bank = db.query(Bank).filter(Bank.ifsc_prefix == prefix).first()
     if not bank:
-        raise ValidationError("Unknown bank IFSC prefix", details={"prefix": prefix})
+        allowed_prefixes = [row[0] for row in db.query(Bank.ifsc_prefix).order_by(Bank.ifsc_prefix).all()]
+        raise ValidationError(
+            f"Unknown bank IFSC prefix '{prefix}'. Use a registered IFSC beginning with {', '.join(allowed_prefixes)}.",
+            details={"prefix": prefix, "allowed_prefixes": allowed_prefixes},
+        )
 
     fdr_fingerprint = fingerprint(entered["fdr_number"], bank.id)
     duplicate = (
