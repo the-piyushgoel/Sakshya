@@ -200,7 +200,7 @@ export function AppShell({ navItems }: { navItems: FeatureNavItem[] }) {
                 value={switchUser}
                 onChange={(event) => {
                   setSwitchUser(event.target.value);
-                  setSwitchPassword('demo@123');
+                  setSwitchPassword('');
                   setSwitchError('');
                 }}
               >
