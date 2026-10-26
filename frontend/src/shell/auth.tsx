@@ -10,7 +10,7 @@ import {
 import { api, ApiError, getAccessToken, setAccessToken } from '../api/client';
 import type { AuthResponse, DemoUser, User } from '../api/types';
 
-const AUTH_BYPASS = import.meta.env.DEV && import.meta.env.VITE_AUTH_BYPASS !== 'false';
+const AUTH_BYPASS = import.meta.env.VITE_AUTH_BYPASS === 'true';
 
 const previewUsers: DemoUser[] = [
   { username: 'preview_signatory', display_name: 'Institute Signatory', roles: ['INS_SIGNATORY'] },
