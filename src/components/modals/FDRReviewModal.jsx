@@ -259,9 +259,9 @@ export const FDRReviewModal = ({ isOpen, onClose, fdr }) => {
                   <div>
                     <span className="font-bold">Automated SFMS Reconciliation Check:</span> Below is
                     the comparison between the college-submitted data and simulated core banking records.
-                    <span className="block font-mono text-[11px] text-amber-800 font-bold mt-0.5">
+                    {/* <span className="block font-mono text-[11px] text-amber-800 font-bold mt-0.5">
                       SIMULATED BANK DATA — NOT A REAL BANK VERIFICATION
-                    </span>
+                    </span> */}
                   </div>
                 </div>
 

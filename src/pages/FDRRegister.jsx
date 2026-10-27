@@ -199,9 +199,9 @@ export const FDRRegister = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-200 gap-4">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-xs font-semibold uppercase tracking-wider text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+            {/* <span className="text-xs font-semibold uppercase tracking-wider text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
               {isAicte ? "National AICTE Ledger" : "Institutional Ledger"}
-            </span>
+            </span> */}
             <span className="text-xs text-slate-400">•</span>
             <span className="text-xs text-slate-500 font-mono">
               Records: {filteredRecords.length} of {scopedRecords.length}
