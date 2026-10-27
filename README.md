@@ -76,6 +76,10 @@ npm run gen:api       # generates src/api/generated.ts from /openapi.json
 **Password for all accounts:** `demo@123`
 **Step-up PIN:** `246810`
 
+Sign in with one of the seeded accounts, or choose **Create an account** on the login screen. New accounts get institute-signatory access but have no institute association, so institute workflows remain unavailable until an institute is assigned. Passwords are stored as bcrypt hashes.
+
+Local data is stored persistently in **SQLite** at `backend/data/sakshya.db` by default (`DATABASE_URL` in `.env` can point to another SQLAlchemy-supported database). The API provides `POST /api/auth/signup` and `POST /api/auth/login`; signup creates the user in this database and signs them in.
+
 ---
 
 ### Makefile targets

@@ -413,6 +413,7 @@ def create_instrument(
     issue_date: str = Form(...),
     maturity_date: str = Form(...),
     interest_rate_pct: str = Form("7.25"),
+    favouring: str | None = Form(None),
     holder_names: str | None = Form(None),
     current_user: User = Depends(require_roles(Role.INS_SIGNATORY)),
 ):
@@ -427,6 +428,8 @@ def create_instrument(
         "maturity_date": maturity_date,
         "interest_rate_pct": interest_rate_pct,
     }
+    if favouring:
+        entered["favouring"] = favouring
     if holder_names:
         entered["holder_names"] = holder_names
     db = SessionLocal()
@@ -556,9 +559,36 @@ def list_discrepancies(
     page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(require_roles(*_SCRUTINY_ROLES, Role.COMPLIANCE_OFFICER)),
 ):
-    """List open discrepancies across instruments."""
-    # TODO PY-2b: replace stub
-    return DiscrepancyListResponse(items=[_MOCK_DISCREPANCY], total=1)
+    """List persisted unresolved discrepancies for the officer work queue."""
+    db = SessionLocal()
+    try:
+        query = db.query(Discrepancy).filter(
+            Discrepancy.status.in_((
+                DiscrepancyStatus.OPEN.value,
+                DiscrepancyStatus.ESCALATED.value,
+            )),
+        ).order_by(Discrepancy.created_at.desc(), Discrepancy.id)
+        total = query.count()
+        rows = query.offset((page - 1) * page_size).limit(page_size).all()
+        return DiscrepancyListResponse(
+            items=[
+                DiscrepancyOut(
+                    id=row.id,
+                    instrument_id=row.instrument_id,
+                    code=row.code,
+                    severity=row.severity,
+                    status=row.status,
+                    details=row.details_json,
+                    created_at=row.created_at.isoformat(),
+                    resolved_by=row.resolved_by,
+                    resolution_note=row.resolution_note,
+                )
+                for row in rows
+            ],
+            total=total,
+        )
+    finally:
+        db.close()
 
 
 @router.post("/discrepancies/{discrepancy_id}/resolve", response_model=DiscrepancyOut)
@@ -704,12 +734,13 @@ def renew_instrument(
     issue_date: str = Form(...),
     maturity_date: str = Form(...),
     interest_rate_pct: str = Form("7.25"),
+    favouring: str | None = Form(None),
     holder_names: str | None = Form(None),
     current_user: User = Depends(require_roles(Role.INS_SIGNATORY)),
 ):
-    """Submit a new-number renewal while keeping its predecessor in coverage."""
-    if mode != "NEW_NUMBER":
-        raise ValidationError("mode not supported yet")
+    """Submit a same-number or replacement-number renewal for re-verification."""
+    if mode not in {"SAME_NUMBER", "NEW_NUMBER"}:
+        raise ValidationError("mode must be SAME_NUMBER or NEW_NUMBER")
     data = file.file.read()
     validate_pdf(data, file.filename or "")
     entered = {
@@ -719,6 +750,8 @@ def renew_instrument(
     }
     if holder_names:
         entered["holder_names"] = holder_names
+    if favouring:
+        entered["favouring"] = favouring
     db = SessionLocal()
     try:
         predecessor = service.get_instrument(instrument_id, db)
@@ -744,8 +777,10 @@ def renew_instrument(
         old_number = old_fields.get("fdr_number", {}).get("value")
         old_maturity = service.parse_date(old_fields.get("maturity_date", {}).get("value"))
         new_maturity = service.parse_date(maturity_date)
-        if fdr_number == old_number:
+        if mode == "NEW_NUMBER" and fdr_number == old_number:
             raise ValidationError("New FDR number must differ from predecessor")
+        if mode == "SAME_NUMBER" and fdr_number != old_number:
+            raise ValidationError("Same-number renewal must retain the predecessor FDR number")
         if not old_maturity or not new_maturity or new_maturity <= old_maturity:
             raise ValidationError("New maturity date must be after predecessor maturity date")
 
@@ -758,11 +793,11 @@ def renew_instrument(
             id=stable_id("history", f"renewal-started:{detail.id}"),
             instrument_id=predecessor.id, from_state=predecessor.state,
             to_state=predecessor.state, actor_id=current_user.id,
-            reason=f"Renewal started with successor {detail.id}", at=service.clock.now(),
+            reason=f"{mode} renewal started with successor {detail.id}", at=service.clock.now(),
         ))
         audit.log(
             actor=current_user, action="renewal_started", entity_type="INSTRUMENT",
-            entity_id=predecessor.id, payload={"successor_id": detail.id}, db=db,
+            entity_id=predecessor.id, payload={"successor_id": detail.id, "mode": mode}, db=db,
         )
         db.commit()
         return detail

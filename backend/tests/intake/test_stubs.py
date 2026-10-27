@@ -301,14 +301,14 @@ def test_quarantine_reject_renew_actions():
     res_ren = client.post(
         f"/api/instruments/{renewal_id}/renew",
         files={"file": ("renewal.pdf", b"ignored until mode validation", "application/pdf")},
-        data={"mode": "SAME_NUMBER", "fdr_number": "BRB-FDR-2027-000202",
+        data={"mode": "REPLACEMENT", "fdr_number": "BRB-FDR-2027-000202",
               "bank_ifsc": "BRBK0001234", "principal_paise": "250000000",
               "issue_date": "2027-01-16", "maturity_date": "2030-01-15"},
         headers=ar_headers,
     )
     assert res_ren.status_code == 422
     assert res_ren.json()["error"]["code"] == "VALIDATION_ERROR"
-    assert res_ren.json()["error"]["message"] == "mode not supported yet"
+    assert res_ren.json()["error"]["message"] == "mode must be SAME_NUMBER or NEW_NUMBER"
 
 
 def test_activate_step_up_guard():

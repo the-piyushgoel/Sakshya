@@ -7,6 +7,7 @@ The shell discovers those exports automatically; feature route paths are relativ
 Export navigation items with `label`, `path`, and optional `roles` to control which roles see them.
 Reusable components live in `src/ui/`; authenticated user, role and demo clock state live in `src/shell/`.
 API calls go through `src/api/client.ts`, which attaches the session token and exposes structured `ApiError`s.
+The login page supports account creation and sign-in; new accounts start as unassigned institute signatories and require institute assignment to use institute workflows.
 Use integer paise for amounts and `formatINR`; use `formatDate` for readable dates.
 With authentication enabled, the role switcher logs in as the selected demo user and prompts for that user's password; it never bypasses backend auth.
 The English / हिन्दी switch is available before and after login; use `useLanguage()` and `t('key')` for translated feature UI.
@@ -18,4 +19,4 @@ Public release-letter verification is available at `/verify` and `/verify/:code?
 
 The PA-4 release authority workspace is available to `RELEASE_AUTHORITY` at `/release-desk`; it reviews pending signatures, requires step-up before signing, shows the release payload and fingerprint, opens the signed PDF, and supports reasoned revocation. Finance officers use `/finance/settlements` to reconcile credited amounts, document mismatches, and review closed cases. Both workspaces call the endpoints in `docs/CONTRACT.md`; end-to-end actions require those backend routes to be implemented and available.
 
-In Vite development, authentication is bypassed by default so the UI can be previewed without signing in; use the role selector to switch preview workspaces. Set `VITE_AUTH_BYPASS=false` in the frontend environment and restart Vite to restore local sign-in. The bypass is disabled in production builds and does not mock or bypass backend API authentication.
+In Vite development, sign-in is enabled by default. To preview a seeded demo workspace without signing in, set `VITE_AUTH_BYPASS=true` in the frontend environment and restart Vite. The bypass is disabled in production builds and does not mock or bypass backend API authentication.

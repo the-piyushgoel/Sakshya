@@ -109,7 +109,7 @@ Stub-first: Day 1 raat tak har endpoint **final response model + example data** 
 
 | Endpoint | Roles | Owner |
 |---|---|---|
-| `POST /auth/login` · `POST /auth/step-up {pin}` · `GET /me` · `GET /demo/users` (DEMO_MODE) | public / any | Premansh |
+| `POST /auth/signup` · `POST /auth/login` · `POST /auth/step-up {pin}` · `GET /me` · `GET /demo/users` (DEMO_MODE) | public / any | Premansh |
 | `GET /notifications` · `POST /notifications/{id}/read` | any | Premansh |
 | `GET /audit` · `GET /audit/verify` | AUDITOR, SYSTEM_ADMIN, officers | Premansh |
 | `POST /admin/audit/tamper-demo` · `POST /admin/audit/repair-demo` | SYSTEM_ADMIN + DEMO_MODE | Premansh |
@@ -150,4 +150,3 @@ Stub-first: Day 1 raat tak har endpoint **final response model + example data** 
 | `release.service` | `get_active_hold(scope, id)` |
 
 ---
-

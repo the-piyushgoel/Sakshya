@@ -39,8 +39,10 @@ type TrustLevel = 'L0_CLAIMED' | 'L1_ATTESTED' | 'L2_BANK_CONFIRMED';
 interface Obligation {
   id: string;
   reference?: string;
+  programme?: string;
   state?: string;
   required_paise?: number;
+  covered_paise?: number;
   confirmed_paise?: number;
   provisional_paise?: number;
   term_end_date?: string;
@@ -107,6 +109,16 @@ function asList<T>(value: unknown): T[] {
   if (Array.isArray(value)) return value as T[];
   const object = asObject(value);
   return Array.isArray(object.items) ? object.items as T[] : [];
+}
+
+function normalizeInstrumentFields(value: unknown): JsonObject {
+  if (!Array.isArray(value)) return asObject(value);
+  return value.reduce<JsonObject>((fields, item) => {
+    const field = asObject(item);
+    const name = text(field.name);
+    if (name) fields[name] = field;
+    return fields;
+  }, {});
 }
 
 function asNumber(value: unknown): number | undefined {
@@ -194,32 +206,42 @@ function LoadingState() {
 }
 
 function useObligations() {
+  const { user } = useAuth();
   return useQuery({
-    queryKey: ['institute', 'obligations'],
-    queryFn: async () => asList<Obligation>(await api.get<unknown>('/obligations')),
+    // Cached records must never carry over when a demo user/account changes.
+    queryKey: ['institute', 'obligations', user?.id],
+    queryFn: async () => {
+      const rows = asList<Obligation>(await api.get<unknown>('/obligations'));
+      return [...new Map(rows.map((row) => [row.id, row])).values()];
+    },
+    enabled: Boolean(user),
   });
 }
 
 function useInstruments() {
+  const { user } = useAuth();
   return useQuery({
-    queryKey: ['institute', 'instruments'],
+    queryKey: ['institute', 'instruments', user?.id],
     queryFn: async () => asList<Instrument>(await api.get<unknown>('/instruments')),
+    enabled: Boolean(user),
   });
 }
 
 export function DashboardPage() {
   const { t, language } = useLanguage();
+  const { user } = useAuth();
   const obligationsQuery = useObligations();
   const instrumentsQuery = useInstruments();
   const instituteQuery = useQuery({
-    queryKey: ['institute', 'profile'],
+    queryKey: ['institute', 'profile', user?.id],
     queryFn: () => api.get<JsonObject>('/institutes/me'),
+    enabled: Boolean(user),
   });
   const obligations = obligationsQuery.data ?? [];
   const instruments = instrumentsQuery.data ?? [];
   const instituteName = text(instituteQuery.data?.name ?? instituteQuery.data?.institute_name);
   const obligation = obligations[0];
-  const confirmed = obligation?.confirmed_paise ?? 0;
+  const confirmed = obligation?.covered_paise ?? obligation?.confirmed_paise ?? 0;
   const provisional = obligation?.provisional_paise ?? 0;
   const required = obligation?.required_paise;
   const coverage = required && required > 0 ? Math.min(100, Math.round((confirmed / required) * 100)) : 0;
@@ -234,7 +256,7 @@ export function DashboardPage() {
         obligationsQuery.isError ? <LoadError error={obligationsQuery.error} onRetry={() => void obligationsQuery.refetch()} /> :
           instrumentsQuery.isError ? <LoadError error={instrumentsQuery.error} onRetry={() => void instrumentsQuery.refetch()} /> :
             <div className="grid gap-5 lg:grid-cols-[1.15fr_0.85fr]">
-              <Card id="obligations" title={t('institute.obligation')} description={obligation?.reference ?? t('institute.description')} action={obligation?.state ? <StatusPill value={obligation.state} /> : undefined}>
+              <Card id="obligations" title={t('institute.obligation')} description={obligation?.programme ?? obligation?.reference ?? t('institute.description')} action={obligation?.state ? <StatusPill value={obligation.state} /> : undefined}>
                 {obligation ? <>
                   <div className="grid gap-3 sm:grid-cols-3">
                     <Metric label={t('institute.required')} value={amount(required)} />
@@ -296,15 +318,17 @@ export function InstrumentListPage() {
 }
 
 export function SubmitFdrPage() {
-  const { t } = useLanguage();
+  const { t, label } = useLanguage();
   const { user } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToasts();
+  const obligationsQuery = useObligations();
   const [step, setStep] = useState(0);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<JsonObject | null>(null);
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
+  const [obligationId, setObligationId] = useState('');
   const [edited, setEdited] = useState<string[]>([]);
   const [declared, setDeclared] = useState(false);
   const isSignatory = user?.roles.includes('INS_SIGNATORY') ?? false;
@@ -334,10 +358,12 @@ export function SubmitFdrPage() {
   const submitMutation = useMutation({
     mutationFn: async () => {
       if (!file || !preview) throw new Error(t('institute.previewRequired'));
+      if (!obligationId) throw new Error(t('institute.requiredField'));
       if (fieldSpecs.some((spec) => spec.required && !fieldValues[spec.key]?.trim())) throw new Error(t('institute.requiredField'));
       if (!/^\d+$/.test(fieldValues.principal_paise ?? '') || Number(fieldValues.principal_paise) <= 0) throw new Error(t('institute.invalidAmount'));
       const data = new FormData();
       data.append('file', file);
+      data.append('obligation_id', obligationId);
       for (const [key, value] of Object.entries(fieldValues)) data.append(key, value);
       return apiRequest<JsonObject>('/instruments', { method: 'POST', body: data });
     },
@@ -358,9 +384,18 @@ export function SubmitFdrPage() {
     {!isSignatory && <Card className="border-amber-200 bg-amber-50 text-sm text-amber-900"><div className="flex items-start gap-2"><CircleAlert size={17} className="mt-0.5 shrink-0" /><p>{t('institute.signatoryOnly')}</p></div></Card>}
     <WizardSteps step={step} />
     {step === 0 && <Card title={t('institute.uploadTitle')} description={t('institute.uploadDescription')}>
+      {obligationsQuery.isLoading ? <Skeleton className="h-12 w-full" /> :
+        obligationsQuery.isError ? <LoadError error={obligationsQuery.error} onRetry={() => void obligationsQuery.refetch()} /> :
+          <label className="field-label mb-4 block">{t('institute.selectObligation')}
+            <select className="input-control mt-1.5" value={obligationId} onChange={(event) => setObligationId(event.target.value)} required>
+              <option value="">{t('institute.selectObligation')}</option>
+              {(obligationsQuery.data ?? []).map((obligation) => <option key={obligation.id} value={obligation.id}>{obligation.programme ?? obligation.reference ?? obligation.id} · {label(obligation.state ?? 'PENDING_DEPOSIT')}</option>)}
+            </select>
+          </label>}
+      {obligationsQuery.isSuccess && obligationsQuery.data.length === 0 && <p role="status" className="mb-4 text-sm text-slate-500">{t('institute.noInstituteObligations')}</p>}
       <FileDrop accept=".pdf,application/pdf" maxSizeMB={15} fileName={file?.name} disabled={!isSignatory || previewMutation.isPending} onFile={(nextFile) => { setFile(nextFile); setPreview(null); setFieldValues({}); }} />
       {previewMutation.isError && <InlineError error={previewMutation.error} />}
-      <div className="mt-5 flex justify-end"><Button disabled={!isSignatory || !file} loading={previewMutation.isPending} onClick={() => previewMutation.mutate()}>{t('institute.preview')} <ArrowRight size={15} /></Button></div>
+      <div className="mt-5 flex justify-end"><Button disabled={!isSignatory || !file || !obligationId} loading={previewMutation.isPending} onClick={() => previewMutation.mutate()}>{t('institute.preview')} <ArrowRight size={15} /></Button></div>
     </Card>}
     {step === 1 && <div className="space-y-5">
       <Card title={t('institute.reviewTitle')} description={t('institute.reviewDescription')}>
@@ -477,8 +512,8 @@ export function InstrumentDetailPage() {
     enabled: Boolean(id),
   });
   const instrument = detailQuery.data as Instrument | undefined;
-  const fields = asObject(detailQuery.data?.fields);
-  const checks = asList<DocCheck>(detailQuery.data?.checks);
+  const fields = normalizeInstrumentFields(detailQuery.data?.fields);
+  const checks = asList<DocCheck>(detailQuery.data?.doc_checks);
   const discrepancies = asList<JsonObject>(detailQuery.data?.discrepancies);
   const bankRequests = asList<JsonObject>(detailQuery.data?.bank_requests);
 
@@ -776,10 +811,10 @@ export function ReleaseRequestPage() {
               <label className="field-label block">{t('institute.selectObligation')}
                 <select className="input-control mt-1.5" value={obligationId} onChange={(event) => setObligationId(event.target.value)} required>
                   <option value="">{t('institute.noObligations')}</option>
-                  {(obligationsQuery.data ?? []).map((obligation) => <option key={obligation.id} value={obligation.id}>{obligation.reference ?? obligation.id} · {label(obligation.state ?? 'PENDING_DEPOSIT')}</option>)}
+                  {(obligationsQuery.data ?? []).map((obligation) => <option key={obligation.id} value={obligation.id}>{obligation.programme ?? obligation.reference ?? obligation.id} · {label(obligation.state ?? 'PENDING_DEPOSIT')}</option>)}
                 </select>
               </label>
-              {selectedObligation && <div className="grid gap-3 sm:grid-cols-3"><Metric label={t('institute.coverageRequired')} value={amount(selectedObligation.required_paise)} /><Metric label={t('institute.confirmedAmount')} value={amount(selectedObligation.confirmed_paise)} /><Metric label={t('institute.provisionalAmount')} value={amount(selectedObligation.provisional_paise)} /></div>}
+              {selectedObligation && <div className="grid gap-3 sm:grid-cols-3"><Metric label={t('institute.coverageRequired')} value={amount(selectedObligation.required_paise)} /><Metric label={t('institute.confirmedAmount')} value={amount(selectedObligation.covered_paise ?? selectedObligation.confirmed_paise)} /><Metric label={t('institute.provisionalAmount')} value={amount(selectedObligation.provisional_paise)} /></div>}
               <fieldset><legend className="field-label mb-2">{t('institute.selectInstruments')}</legend>
                 {eligibleToSelect.length === 0 ? <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-500">{t('institute.noInstruments')}</p> :
                   <div className="space-y-2">{eligibleToSelect.map((instrument) => <label key={instrument.id} className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 bg-white p-3 hover:bg-slate-50"><input type="checkbox" checked={selectedIds.includes(instrument.id)} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...current, instrument.id] : current.filter((id) => id !== instrument.id))} /><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{instrument.fdr_number ?? instrument.id}</strong><span className="mt-1 block text-xs text-slate-500">{amount(instrument.principal_paise)}</span></span><StatusPill value={instrument.state ?? 'ACTIVE'} /></label>)}</div>}

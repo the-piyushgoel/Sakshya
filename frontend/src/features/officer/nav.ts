@@ -5,6 +5,7 @@ export const navItems: FeatureNavItem[] = [
     label: 'Officer Console',
     path: '/officer/queue',
     icon: 'dashboard',
+    section: 'officer',
     roles: ['SCRUTINY_OFFICER', 'APPROVING_OFFICER'],
   },
   {

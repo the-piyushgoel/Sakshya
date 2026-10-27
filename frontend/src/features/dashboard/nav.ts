@@ -5,6 +5,7 @@ export const navItems: FeatureNavItem[] = [
     label: 'Leadership Dashboard',
     path: '/leadership/dashboard',
     icon: 'dashboard',
+    section: 'dashboard',
     roles: ['LEADERSHIP', 'SCRUTINY_OFFICER', 'APPROVING_OFFICER', 'COMPLIANCE_OFFICER', 'AUDITOR', 'SYSTEM_ADMIN'],
   },
 ];

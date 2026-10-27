@@ -27,7 +27,7 @@ def sha256_hex(data: bytes) -> str:
 def save_document(instrument_id: str, data: bytes) -> tuple[Path, str]:
     """Store bytes under backend/data/files without replacing existing content."""
     digest = sha256_hex(data)
-    backend_dir = Path(__file__).resolve().parents[2]
+    backend_dir = Path(__file__).resolve().parents[3]
     target_dir = backend_dir / "data" / "files" / instrument_id
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"{digest}.pdf"
