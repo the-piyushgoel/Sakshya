@@ -164,7 +164,7 @@ export const AICTEAdminDashboard = ({ onOpenReview }) => {
       <div className="bg-white border border-gray-200 rounded-xl p-5 sm:p-6 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <span className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-purple-100 text-purple-800 border border-purple-300">
+            <span className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-blue-100 text-blue-800 border border-blue-300">
               AICTE Regulatory Scrutiny Bureau
             </span>
             <span className="text-xs text-slate-400">•</span>
@@ -242,7 +242,7 @@ export const AICTEAdminDashboard = ({ onOpenReview }) => {
               : "bg-gray-50 border-gray-200 hover:bg-gray-100"
           }`}
         >
-          <div className="flex items-center justify-between text-amber-600 mb-1">
+          <div className="flex items-center justify-between text-blue-600 mb-1">
             <span className="text-[10px] font-bold uppercase tracking-wider text-amber-900">
               Pending Scrutiny
             </span>
@@ -312,7 +312,7 @@ export const AICTEAdminDashboard = ({ onOpenReview }) => {
 
         {/* Matured Instruments */}
         <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
-          <div className="flex items-center justify-between text-amber-600 mb-1">
+          <div className="flex items-center justify-between text-blue-600 mb-1">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
               Matured
             </span>
@@ -507,7 +507,7 @@ export const AICTEAdminDashboard = ({ onOpenReview }) => {
                           <div className="flex items-center gap-1.5">
                             <span>{item.id}</span>
                             {item.isReplacement && (
-                              <span className="text-[10px] font-bold text-purple-700 bg-purple-100 px-1.5 py-0.2 rounded border border-purple-200">
+                              <span className="text-[10px] font-bold text-purple-700 bg-blue-100 px-1.5 py-0.2 rounded border border-purple-200">
                                 Rollover
                               </span>
                             )}

@@ -101,11 +101,11 @@ export const Login = () => {
           {/* Quick Demo Role Picker helper */}
           <div className="mb-6 p-3.5 bg-amber-50/80 border border-amber-200 rounded-lg text-xs text-amber-900">
             <div className="font-semibold flex items-center justify-between mb-2">
-              <span className="flex items-center gap-1.5 text-amber-800">
+              {/* <span className="flex items-center gap-1.5 text-amber-800">
                 <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
                 Select Configured Account:
-              </span>
-              <span className="text-[10px] text-amber-700 font-mono">Click to autofill</span>
+              </span> */}
+              {/* <span className="text-[10px] text-amber-700 font-mono">Click to autofill</span> */}
             </div>
             <div className="grid grid-cols-2 gap-2">
               {DEMO_ACCOUNTS.map((acc) => {
