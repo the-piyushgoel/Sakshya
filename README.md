@@ -34,7 +34,7 @@ Access the portal at **`http://localhost:5173`**.
 
 ---
 
-## 🔄 End-to-End Verification Workflow (Prompt 2 Implementation)
+## 🔄 End-to-End Verification Workflow
 
 ### 1. College Submission
 - The college user (`kiet`) registers an FDR via **FDR Register $\rightarrow$ Add New FDR**.
